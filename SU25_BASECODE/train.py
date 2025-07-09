@@ -1,123 +1,54 @@
-from __future__ import print_function
-import os, argparse
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 
-# Training settings
-parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
-parser.add_argument('--batch-size', type=int, default=64, metavar='N',
-                    help='input batch size for training (default: 64)')
-parser.add_argument('--test-batch-size', type=int, default=1000, metavar='N',
-                    help='input batch size for testing (default: 1000)')
-parser.add_argument('--epochs', type=int, default=1, metavar='N',
-                    help='number of epochs to train (default: 10)')
-parser.add_argument('--lr', type=float, default=0.01, metavar='LR',
-                    help='learning rate (default: 0.01)')
-parser.add_argument('--momentum', type=float, default=0.5, metavar='M',
-                    help='SGD momentum (default: 0.5)')
-parser.add_argument('--no-cuda', action='store_true', default=False,
-                    help='disables CUDA training (use CPU)')
-parser.add_argument('--seed', type=int, default=1, metavar='S',
-                    help='random seed (default: 1)')
-parser.add_argument('--log-interval', type=int, default=10, metavar='N',
-                    help='how many batches to wait before logging training status')
-args = parser.parse_args()
+# The following is all code from the adversarial training tutorial. https://adversarial-ml-tutorial.org/adversarial_examples/
 
-# Device configuration
-device = torch.device("cuda" if not args.no_cuda and torch.cuda.is_available() else "cpu")
-
-torch.manual_seed(args.seed)
-
-# print('===> Building model')
-# We can swap this out with relevant models as we decide to change things.
-class Net(nn.Module):
-    def __init__(self):
-        super(Net, self).__init__()
-        self.conv1 = nn.Conv2d(1, 32, kernel_size=5)
-        self.bn1 = nn.BatchNorm2d(32)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=5)
-        self.bn2 = nn.BatchNorm2d(64)
-        self.conv2_drop = nn.Dropout2d(p=0.5)
-        self.fc1 = nn.Linear(1024, 128)
-        self.fc2 = nn.Linear(128, 10)
-    
-    """ Unsure if needed, commenting out for now.
+class Flatten(nn.Module):
     def forward(self, x):
-        x = F.leaky_relu(self.bn1(self.conv1(x)), negative_slope=0.01)
-        x = F.max_pool2d(x, 2)
-        x = F.leaky_relu(self.bn2(self.conv2_drop(self.conv2(x))), negative_slope=0.01)
-        x = F.max_pool2d(x, 2)
-        x = torch.flatten(x, 1)
-        x = F.leaky_relu(self.fc1(x), negative_slope=0.01)
-        x = F.dropout(x, p=0.5)
-        x = self.fc2(x)
-        return F.log_softmax(x, dim=1)
-    """
+        return x.view(x.shape[0], -1)
 
-model = Net().to(device)
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")   
 
-optimizer = optim.Adam(model.parameters(), lr=args.lr)
-scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
+"""So far the only way to make models is to manually copy/paste like below. 
+Maybe in the future we can add something that enables us to make custom models. 
+Better yet, load in models that we choose from outside."""
+model_dnn_2 = nn.Sequential(Flatten(), nn.Linear(784,200), nn.ReLU(), 
+                            nn.Linear(200,10)).to(device)
 
-def train(epoch):
-    model.train()
-    for batch_idx, (data, target) in enumerate(train_loader):
-        data, target = data.to(device), target.to(device)
-        optimizer.zero_grad()
-        output = model(data)
-        loss = F.nll_loss(output, target)
-        loss.backward()
-        optimizer.step()
-        if batch_idx % args.log_interval == 0:
-            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
-                epoch, batch_idx * len(data), len(train_loader.dataset),
-                100. * batch_idx / len(train_loader), loss.item()))
+model_dnn_4 = nn.Sequential(Flatten(), nn.Linear(784,200), nn.ReLU(), 
+                            nn.Linear(200,100), nn.ReLU(),
+                            nn.Linear(100,100), nn.ReLU(),
+                            nn.Linear(100,10)).to(device)
 
-def test():
-    model.eval()
-    test_loss = 0
-    correct = 0
-    with torch.no_grad():
-        for data, target in test_loader:
-            data, target = data.to(device), target.to(device)
-            output = model(data)
-            test_loss += F.nll_loss(output, target, reduction='sum').item()
-            pred = output.argmax(dim=1, keepdim=True)
-            correct += pred.eq(target.view_as(pred)).sum().item()
-    test_loss /= len(test_loader.dataset)
-    print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.1f}%)\n'.format(
-        test_loss, correct, len(test_loader.dataset),
-        100. * correct / len(test_loader.dataset)))
-
+def epoch(loader, model, opt=None):
+    total_loss, total_err = 0.,0.
+    for X,y in loader:
+        X,y = X.to(device), y.to(device)
+        yp = model(X)
+        loss = nn.CrossEntropyLoss()(yp,y)
+        if opt:
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+        
+        total_err += (yp.max(dim=1)[1] != y).sum().item()
+        total_loss += loss.item() * X.shape[0]
+    return total_err / len(loader.dataset), total_loss / len(loader.dataset)
 
 if __name__ == "__main__":
-    print('===> Loading data')
-    train_transforms = transforms.Compose([
-        transforms.RandomRotation(10),
-        transforms.RandomAffine(0, shear=10, scale=(0.8, 1.2)),
-        transforms.ToTensor(),
-        transforms.Normalize((0.1307,), (0.3081,))
-    ])
+    # The following only uses model_dnn_2. At later points we can add an arg that loads a model for us.
+    mnist_train = datasets.MNIST("../data", train=True, download=True, transform=transforms.ToTensor())
+    mnist_test = datasets.MNIST("../data", train=False, download=True, transform=transforms.ToTensor())
+    train_loader = DataLoader(mnist_train, batch_size = 100, shuffle=True)
+    test_loader = DataLoader(mnist_test, batch_size = 100, shuffle=False)
+    opt = optim.SGD(model_dnn_2.parameters(), lr=1e-1)
+    print('train_err\ttrain_loss\ttest_err\ttest_loss')
+    for _ in range(10):
+        train_err, train_loss = epoch(train_loader, model_dnn_2, opt)
+        test_err, test_loss = epoch(test_loader, model_dnn_2)
+        print(*("{:.6f}".format(i) for i in (train_err, train_loss, test_err, test_loss)), sep="\t")
+    torch.save(model_dnn_2.state_dict(), "model_dnn_2.pt")
 
-    test_transforms = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.1307,), (0.3081,))
-    ])
-
-    train_loader = DataLoader(
-        datasets.MNIST('data', train=True, download=True, transform=train_transforms),
-        batch_size=args.batch_size, shuffle=True
-    )
-    test_loader = DataLoader(
-        datasets.MNIST('data', train=False, transform=test_transforms),
-        batch_size=args.test_batch_size, shuffle=False
-    )
-
-    for epoch in range(1, args.epochs + 1):
-        train(epoch)
-        test()
-        scheduler.step()
