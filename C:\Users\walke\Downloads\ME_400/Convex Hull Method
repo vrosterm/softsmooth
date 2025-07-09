@@ -1,0 +1,117 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torchvision import datasets, transforms
+from torch.utils.data import DataLoader
+import numpy as np
+import cvxpy as cp
+
+mnist_train = datasets.MNIST("C:/Users/bensager/data", train=True, download=True, transform=transforms.ToTensor())
+mnist_test = datasets.MNIST("C:/Users/bensager/data", train=False, download=True, transform=transforms.ToTensor())
+train_loader = DataLoader(mnist_train, batch_size=100, shuffle=True)
+test_loader = DataLoader(mnist_test, batch_size=100, shuffle=False)
+
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+class Flatten(nn.Module):
+    def forward(self, x):
+        return x.view(x.shape[0], -1)    
+
+model_cnn = nn.Sequential(nn.Conv2d(1, 32, 3, padding=1), nn.ReLU(),
+                          nn.Conv2d(32, 32, 3, padding=1, stride=2), nn.ReLU(),
+                          nn.Conv2d(32, 64, 3, padding=1), nn.ReLU(),
+                          nn.Conv2d(64, 64, 3, padding=1, stride=2), nn.ReLU(),
+                          Flatten(),
+                          nn.Linear(7*7*64, 100), nn.ReLU(),
+                          nn.Linear(100, 10)).to(device)
+
+def pgd_linf(model, X, y, epsilon=0.086, alpha=0.01, num_iter=20, randomize=False):
+    if randomize:
+        delta = torch.rand_like(X, requires_grad=True)
+        delta.data = delta.data * 2 * epsilon - epsilon
+    else:
+        delta = torch.zeros_like(X, requires_grad=True)
+        
+    for t in range(num_iter):
+        loss = nn.CrossEntropyLoss()(model(X + delta), y)
+        loss.backward()
+        delta.data = (delta + alpha*delta.grad.detach().sign()).clamp(-epsilon,epsilon)
+        delta.grad.zero_()
+    return delta.detach()
+
+def epoch(loader, model, opt=None):
+    total_loss, total_err = 0.,0.
+    for X,y in loader:
+        X,y = X.to(device), y.to(device)
+        yp = model(X)
+        loss = nn.CrossEntropyLoss()(yp,y)
+        if opt:
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+        total_err += (yp.max(dim=1)[1] != y).sum().item()
+        total_loss += loss.item() * X.shape[0]
+    return total_err / len(loader.dataset), total_loss / len(loader.dataset)
+
+def epoch_adversarial(loader, model, attack, opt=None, **kwargs):
+    total_loss, total_err = 0., 0.
+    X_robust = []
+    X_nonrobust = []
+    for X, y in loader:
+        X, y = X.to(device), y.to(device)
+        delta = attack(model, X, y, **kwargs)
+        yp = model(X + delta)
+        loss = nn.CrossEntropyLoss()(yp, y)
+        if opt:
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+        total_err += (yp.max(dim=1)[1] != y).sum().item()
+        total_loss += loss.item() * X.shape[0]
+        
+        X_nonrobust.append(X[(yp.max(dim=1)[1] != y)].detach().cpu())
+        X_robust.append(X[(yp.max(dim=1)[1] == y)].detach().cpu())
+
+    X_robust = torch.cat(X_robust, dim=0)
+    X_nonrobust = torch.cat(X_nonrobust, dim=0)
+
+    # Check separability using the convex hull method
+    check_sep(X_robust, X_nonrobust)
+
+    return total_err / len(loader.dataset), total_loss / len(loader.dataset), X_robust, X_nonrobust
+
+def check_sep(X_robust, X_nonrobust):
+    A = np.array(X_robust).T
+    one_vec = np.ones((1, A.shape[1]))
+
+    for y in X_nonrobust:
+        lam = cp.Variable(A.shape[1])
+        obj = cp.Minimize(1)
+        const = [lam >= 0, one_vec @ lam == 1, A @ lam == y]
+        prob = cp.Problem(obj, const)
+        result = prob.solve()
+        print("Lambda values:", lam.value)
+        print("Objective value:", result)
+
+# Train the model once
+opt = optim.SGD(model_cnn.parameters(), lr=1e-1)
+print("Training the model...")
+train_err, train_loss = epoch(train_loader, model_cnn, opt)
+print(f"Training completed. Train Accuracy: {100 - train_err * 100:.2f}%")
+
+# Evaluate the model with adversarial attacks in each epoch
+for t in range(10):
+    print(f"Epoch {t+1}")
+    test_err, test_loss = epoch(test_loader, model_cnn)
+    adv_err, adv_loss, X_num_robust, X_num_nonrobust = epoch_adversarial(test_loader, model_cnn, pgd_linf)
+    if t == 4:
+        for param_group in opt.param_groups:
+            param_group["lr"] = 1e-2
+    print("| Test Accuracy:      {:.2f}%".format(100 - test_err * 100))
+    print("| Attacked Accuracy:  {:.2f}%".format(100 - adv_err * 100))
+    print("number of robust examples:", X_num_robust.shape)
+    print("number of non-robust examples:", X_num_nonrobust.shape)
+
+# Save the trained model (optional)
+torch.save(model_cnn.state_dict(), "model_cnn.pt")
+print("Model saved to model_cnn.pt")
