@@ -94,7 +94,7 @@ def test():
         100. * correct / len(test_loader.dataset)))
 
 
-if __name__ == "__main))":
+if __name__ == "__main__":
     print('===> Loading data')
     train_transforms = transforms.Compose([
         transforms.RandomRotation(10),
@@ -116,7 +116,7 @@ if __name__ == "__main))":
         datasets.MNIST('data', train=False, transform=test_transforms),
         batch_size=args.test_batch_size, shuffle=False
     )
-    
+
     for epoch in range(1, args.epochs + 1):
         train(epoch)
         test()
