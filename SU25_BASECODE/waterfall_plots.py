@@ -73,7 +73,8 @@ def waterfall_plot(model,sigma,n_test_images=500):
     pyplot.figure()
     pyplot.plot(radius_domain,wf_radii)
     pyplot.xlabel("radius")
-    pyplot.ylabel("certified accuracy")
+    pyplot.ylabel("certified accuracy
+    pyplot.title(f"sigma = {sigma}")
     pyplot.show()
 
 #testing waterfall_plot
