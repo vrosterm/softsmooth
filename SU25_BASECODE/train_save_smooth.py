@@ -112,7 +112,7 @@ for model, name in [
 def phi_inverse(x, mu):
     return mu + torch.sqrt(torch.tensor(2)) * torch.erfinv(2 * x - 1)
 
-# Smooth function for certified radius
+# Smooth function for certified radius. Uses softmax to obtain vectors with entries in [0,1] that sum to 1 so they can be inputted into erfinv.
 def smooth(x, model, sigma, n_samples=1000):
     x = x.expand(n_samples, -1, -1, -1)
     epsilon = sigma * torch.randn_like(x)
