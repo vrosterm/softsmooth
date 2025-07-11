@@ -53,15 +53,23 @@ except:
 
 # Function to create a waterfall plot
 def waterfall_plot(model,sigma,n_test_images=500):
-    labels=[0 for n in range(n_test_images)]
-    radii=[0 for n in range(n_test_images)]
-    for n in range(n_test_images): #not yet correct, just grabs 500 images, not 500 per class
-        x, y = mnist_test[n]
+    labels=[0 for n in range(n_test_images*10)]
+    radii=[0 for n in range(n_test_images*10)]
+    classes = [0 for n in range(10)]
+    n_total = 0
+    test_idx = 0
+    while n_total < n_test_images*10:
+        x, y = mnist_test[test_idx]
         x = x.unsqueeze(0).to(device) 
         y = torch.tensor([y]).to(device)
-        labels[n],radii[n]=smooth(x,model,sigma)
-        if labels[n] != y:
-            radii[n]=0
+        test_idx+=1
+        if classes[y.item()-1]<500:
+            classes[y.item()-1]+=1
+            labels[n_total],radii[n_total]=smooth(x,model,sigma)
+            if labels[n_total] != y:
+                radii[n_total]=0
+            n_total+=1
+
     radius_domain = linspace(0,2,1000)
     wf_radii = [0 for n in range(len(radius_domain))]
     for i in range(len(radius_domain)): # for every radius in the domain
@@ -73,7 +81,9 @@ def waterfall_plot(model,sigma,n_test_images=500):
     pyplot.figure()
     pyplot.plot(radius_domain,wf_radii)
     pyplot.xlabel("radius")
-    pyplot.ylabel("certified accuracy
+    pyplot.ylabel("certified accuracy")
+    pyplot.xlim(0,2)
+    pyplot.ylim(0,1)
     pyplot.title(f"sigma = {sigma}")
     pyplot.show()
 
