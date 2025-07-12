@@ -4,6 +4,12 @@ import torch.optim as optim
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 
+from RSLW_model import RSLW  # Import your model
+
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+RSLW_model = RSLW().to(device)  # Instantiate your model
+
 # The following is all code from the adversarial training tutorial. https://adversarial-ml-tutorial.org/adversarial_examples/
 
 class Flatten(nn.Module):
@@ -12,16 +18,10 @@ class Flatten(nn.Module):
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")   
 
-"""So far the only way to make models is to manually copy/paste like below. 
-Maybe in the future we can add something that enables us to make custom models. 
-Better yet, load in models that we choose from outside."""
-model_dnn_2 = nn.Sequential(Flatten(), nn.Linear(784,200), nn.ReLU(), 
-                            nn.Linear(200,10)).to(device)
+# So far the only way to make models is to manually copy/paste like below. 
+# Maybe in the future we can add something that enables us to make custom models.
+# Better yet, load in models that we choose from outside.
 
-model_dnn_4 = nn.Sequential(Flatten(), nn.Linear(784,200), nn.ReLU(), 
-                            nn.Linear(200,100), nn.ReLU(),
-                            nn.Linear(100,100), nn.ReLU(),
-                            nn.Linear(100,10)).to(device)
 
 def epoch(loader, model, opt=None):
     total_loss, total_err = 0.,0.
@@ -47,17 +47,21 @@ def smooth(x: torch.tensor, model: torch.nn.Module, sigma: float, n_samples: int
     return torch.argmax(avg_scores)
 
 if __name__ == "__main__":
-    # The following only uses model_dnn_2. At later points we can add an arg that loads a model for us.
     batch_size = 100
     mnist_train = datasets.MNIST("../data", train=True, download=True, transform=transforms.ToTensor())
     mnist_test = datasets.MNIST("../data", train=False, download=True, transform=transforms.ToTensor())
     train_loader = DataLoader(mnist_train, batch_size = batch_size, shuffle=True)
     test_loader = DataLoader(mnist_test, batch_size = batch_size, shuffle=False)
-    opt = optim.SGD(model_dnn_2.parameters(), lr=1e-1)
-    print('train_err\ttrain_loss\ttest_err\ttest_loss')
-    for _ in range(10):
-        train_err, train_loss = epoch(train_loader, model_dnn_2, opt)
-        test_err, test_loss = epoch(test_loader, model_dnn_2)
-        print(*("{:.6f}".format(i) for i in (train_err, train_loss, test_err, test_loss)), sep="\t")
-    torch.save(model_dnn_2.state_dict(), "model_dnn_2.pt")
+    opt = optim.SGD(RSLW_model.parameters(), lr=1e-1)
+    print("Model Results for {}:".format(type(RSLW_model).__name__))
+    print('\t\ttrain_err\ttrain_loss\ttrain_acc\ttest_err\ttest_loss\ttest_acc') # Including accuracy in the printout
+    for _epoch_ in range(30): # Number of epochs, at 30 right now
+        train_err, train_loss = epoch(train_loader, RSLW_model, opt)
+        test_err, test_loss = epoch(test_loader, RSLW_model)
+        train_acc = (1 - train_err) * 100  # Convert to percentage
+        test_acc = (1 - test_err) * 100  # Convert to percentage
+        print(
+            "Epoch {}:    \t{:.6f}\t{:.6f}\t{:.4f} %\t{:.6f}\t{:.6f}\t{:.4f} %".format(
+                _epoch_ + 1, train_err, train_loss, train_acc, test_err, test_loss, test_acc))
+    torch.save(RSLW_model.state_dict(), "RSLW_model.pt")
 
