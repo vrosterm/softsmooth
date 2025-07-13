@@ -4,11 +4,11 @@ import torch.optim as optim
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 
-from RSLW_model import RSLW  # Import your model
+from RSLW_model import RSLW  # Import model
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-RSLW_model = RSLW().to(device)  # Instantiate your model
+RSLW_model = RSLW().to(device)  # Instantiate model
 
 # The following is all code from the adversarial training tutorial. https://adversarial-ml-tutorial.org/adversarial_examples/
 
