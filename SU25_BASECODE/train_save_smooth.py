@@ -39,6 +39,11 @@ def epoch_adversarial(model, loader, attack, *args):
         delta = attack(model, X, y, *args)
         yp = model(X+delta)
         loss = nn.CrossEntropyLoss()(yp,y)
+
+        if opt:
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
         
         total_err += (yp.max(dim=1)[1] != y).sum().item()
         total_loss += loss.item() * X.shape[0]
@@ -77,7 +82,7 @@ def evaluate_under_attack(model, loader, epsilon, alpha, num_iter):
     return 1 - total_err / len(loader.dataset)
 
 # PGD attack parameters
-epsilon = 0.082  # Maximum perturbation
+epsilon = 0.1  # Maximum perturbation
 alpha = 0.01 # Step size
 num_iter = 40 # Number of iterations
 
@@ -85,13 +90,13 @@ num_iter = 40 # Number of iterations
 if not os.path.exists("model_dnn_2.pt"):
     opt = optim.SGD(model_dnn_2.parameters(), lr=0.1)
     for _ in range(10):
-        epoch_adversarial(model_dnn_2, train_loader, pgd_linf, opt, epsilon, alpha, num_iter)
+        epoch_adversarial(model_dnn_2, train_loader, pgd_linf, epsilon, alpha, num_iter)
     torch.save(model_dnn_2.state_dict(), "model_dnn_2.pt")
 
 if not os.path.exists("model_dnn_4.pt"):
     opt = optim.SGD(model_dnn_4.parameters(), lr=0.1)
     for _ in range(10):
-        epoch_adversarial(model_dnn_4, train_loader, pgd_linf, opt, epsilon, alpha, num_iter)
+        epoch_adversarial(model_dnn_4, train_loader, pgd_linf, epsilon, alpha, num_iter)
     torch.save(model_dnn_4.state_dict(), "model_dnn_4.pt")
 
 # Loading save states
