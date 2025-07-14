@@ -51,8 +51,14 @@ except:
     torch.save(model_dnn_2.state_dict(), "model_dnn_2.pt")
     print("trained!")
 
-# Function to create a waterfall plot
-def waterfall_plot(model,sigma=[0.25,0.5,0.75,1],n_test_images=500):
+
+def waterfall_limited(model,sigma=[0.25,0.5,0.75,1],n_test_images=500):
+    '''Function to create a waterfall plot based on a limited/partial set of the
+    overall test data.
+    model = the nn to make the waterfall plots for. This is smoothed within the
+            function.
+    sigma = list of sigma values to create the waterfall plot for
+    n_test_images = number of test images per class'''
     labels=[[0 for n in range(n_test_images*10)]for m in range(len(sigma))]
     radii=[[0 for n in range(n_test_images*10)] for m in range(len(sigma))]
     for i in range(len(sigma)):
@@ -71,7 +77,6 @@ def waterfall_plot(model,sigma=[0.25,0.5,0.75,1],n_test_images=500):
                     radii[i][n_total]=0
                 n_total+=1
     radius_domain = linspace(0,2,1000)
-    print(radii[1])
     wf_radii = [[0 for n in range(len(radius_domain))] for m in range(len(sigma))]
     for i in range(len(sigma)):
         for j in range(len(radius_domain)): # for every radius in the domain
@@ -90,6 +95,46 @@ def waterfall_plot(model,sigma=[0.25,0.5,0.75,1],n_test_images=500):
     pyplot.legend()
     pyplot.show()
 
-#testing waterfall_plot
+#calling the plot/function. default settings takes 28.6s to run on Faith's laptop.
+#waterfall_limited(model_dnn_2)
 
-waterfall_plot(model_dnn_2)
+
+def waterfall_full(model,sigma=[0.25,0.5,0.75,1]):
+    '''Function to create a waterfall plot for the full mnist test set
+    model = the nn to make the waterfall plots for. This is smoothed within the
+            function.
+    sigma = list of sigma values to create the waterfall plot for'''
+
+    labels=[[0 for n in range(len(mnist_test))]for m in range(len(sigma))]
+    radii= [[0 for n in range(len(mnist_test))] for m in range(len(sigma))]
+    for i in range(len(sigma)):
+        for j in range(len(mnist_test)):
+            x, y = mnist_test[j]
+            x = x.unsqueeze(0).to(device) 
+            y = torch.tensor([y]).to(device)
+            labels[i][j],radii[i][j]=smooth(x,model,sigma[i])
+            if labels[i][j] != y:
+                radii[i][j]=0
+
+    radius_domain = linspace(0,2,1000)
+    wf_radii = [[0 for n in range(len(radius_domain))] for m in range(len(sigma))]
+    for i in range(len(sigma)):
+        for j in range(len(radius_domain)): # for every radius in the domain
+            for k in range(len(radii[i])):     # for every radius computed
+                if radii[i][k]>= radius_domain[j]:  # check if computed radius is greater than current radius
+                    wf_radii[i][j] += 1/len(radii[i]) # adds a proportional cumulative data point to the y axis data
+
+    # Plotting data
+    fig = pyplot.figure()
+    for i in range(len(sigma)):
+        pyplot.plot(radius_domain,wf_radii[i],label = f"sigma = {sigma[i]}")
+    pyplot.xlabel("radius")
+    pyplot.ylabel("certified accuracy")
+    pyplot.xlim(0,2)
+    pyplot.ylim(0,1)
+    pyplot.title(f"sigma = {sigma}")
+    pyplot.legend()
+    pyplot.show()
+
+#testing the full waterfall plot- default settings takes 56.2s to run on Faith's laptop.
+#waterfall_full(model_dnn_2)
