@@ -4,11 +4,11 @@ import torch.optim as optim
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 
-from RSLW_model import RSLW  # Import model
+from SU25_BASECODE.LWRS_model import LWRS  # Import model
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-RSLW_model = RSLW().to(device)  # Instantiate model
+LWRS_model = LWRS().to(device)  # Instantiate model
 
 # The following is all code from the adversarial training tutorial. https://adversarial-ml-tutorial.org/adversarial_examples/
 
@@ -52,16 +52,16 @@ if __name__ == "__main__":
     mnist_test = datasets.MNIST("../data", train=False, download=True, transform=transforms.ToTensor())
     train_loader = DataLoader(mnist_train, batch_size = batch_size, shuffle=True)
     test_loader = DataLoader(mnist_test, batch_size = batch_size, shuffle=False)
-    opt = optim.SGD(RSLW_model.parameters(), lr=1e-1)
-    print("Model Results for {}:".format(type(RSLW_model).__name__))
+    opt = optim.SGD(LWRS_model.parameters(), lr=1e-1)
+    print("Model Results for {}:".format(type(LWRS_model).__name__))
     print('\t\ttrain_err\ttrain_loss\ttrain_acc\ttest_err\ttest_loss\ttest_acc') # Including accuracy in the printout
     for _epoch_ in range(30): # Number of epochs, at 30 right now
-        train_err, train_loss = epoch(train_loader, RSLW_model, opt)
-        test_err, test_loss = epoch(test_loader, RSLW_model)
+        train_err, train_loss = epoch(train_loader, LWRS_model, opt)
+        test_err, test_loss = epoch(test_loader, LWRS_model)
         train_acc = (1 - train_err) * 100  # Convert to percentage
         test_acc = (1 - test_err) * 100  # Convert to percentage
         print(
             "Epoch {}:    \t{:.6f}\t{:.6f}\t{:.4f} %\t{:.6f}\t{:.6f}\t{:.4f} %".format(
                 _epoch_ + 1, train_err, train_loss, train_acc, test_err, test_loss, test_acc))
-    torch.save(RSLW_model.state_dict(), "RSLW_model.pt")
+    torch.save(LWRS_model.state_dict(), "LWRS_model.pt")
 

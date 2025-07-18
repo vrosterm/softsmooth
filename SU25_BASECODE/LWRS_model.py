@@ -5,9 +5,9 @@ class Flatten(nn.Module):
     def forward(self, x):
         return x.view(x.shape[0], -1)
 
-class RSLW(nn.Module):
+class LWRS(nn.Module):
     def __init__(self, noise_std=0.1):
-        super(RSLW, self).__init__()
+        super(LWRS, self).__init__()
         self.noise_std = noise_std
         self.flatten = Flatten()
         self.fc1 = nn.Linear(784, 200)

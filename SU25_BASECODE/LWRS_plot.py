@@ -5,7 +5,7 @@ from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 from matplotlib import pyplot
 from numpy import linspace
-from RSLW_model import RSLW  # Import model
+from SU25_BASECODE.LWRS_model import LWRS  # Import model
 from tqdm import tqdm
 
 # Don't need the FutureWarning message
@@ -40,9 +40,9 @@ class Flatten(nn.Module):
     def forward(self, x):
         return x.view(x.shape[0], -1)  
 
-# Load RSLW model from file
-RSLW_model = RSLW().to(device)
-RSLW_model.load_state_dict(torch.load("RSLW_model.pt"))
+# Load LWRS model from file
+LWRS_model = LWRS().to(device)
+LWRS_model.load_state_dict(torch.load("LWRS_model.pt"))
 print("model loaded!")
 
 # Function to create a waterfall plot
@@ -89,4 +89,4 @@ def waterfall_plot(model, sigma=[0.25,0.5,0.75,1], n_test_images=500):
 
 #testing waterfall_plot
 
-waterfall_plot(RSLW_model)
+waterfall_plot(LWRS_model)

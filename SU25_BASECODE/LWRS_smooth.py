@@ -5,7 +5,7 @@ import os
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 import random
-from RSLW_model import RSLW
+from SU25_BASECODE.LWRS_model import LWRS
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -69,15 +69,15 @@ epsilon = 0.082  # Maximum perturbation
 alpha = 0.01 # Step size
 num_iter = 40 # Number of iterations
 
-# Load saved RSLW model
-RSLW_model = RSLW().to(device)
-RSLW_model.load_state_dict(torch.load("RSLW_model.pt", map_location=device))
+# Load saved LWRS model
+LWRS_model = LWRS().to(device)
+LWRS_model.load_state_dict(torch.load("LWRS_model.pt", map_location=device))
 
-# Evaluating and printing results for RSLW
-clean_acc = evaluate_clean(RSLW_model, test_loader)
-adv_acc = evaluate_under_attack(RSLW_model, test_loader, epsilon, alpha, num_iter)
-print(f"Accuracy of RSLW on clean data: {clean_acc:.4f}")
-print(f"Accuracy of RSLW under PGD attack: {adv_acc:.4f}")
+# Evaluating and printing results for LWRS
+clean_acc = evaluate_clean(LWRS_model, test_loader)
+adv_acc = evaluate_under_attack(LWRS_model, test_loader, epsilon, alpha, num_iter)
+print(f"Accuracy of LWRS on clean data: {clean_acc:.4f}")
+print(f"Accuracy of LWRS under PGD attack: {adv_acc:.4f}")
 
 # Inverse of the Gaussian CDF
 def phi_inverse(x, mu):
@@ -101,7 +101,7 @@ x, y = mnist_test[idx]
 x = x.unsqueeze(0).to(device) 
 y = torch.tensor([y]).to(device)
 
-# Get smoothed classifier prediction and radius for RSLW_model
-label, radius = smooth(x, RSLW_model, sigma=0.2, n_samples=1000)
+# Get smoothed classifier prediction and radius for LWRS_model
+label, radius = smooth(x, LWRS_model, sigma=0.2, n_samples=1000)
 
 print(f"True label: {y.item()}, Predicted: {label}, Certified radius: {radius:.4f}")
