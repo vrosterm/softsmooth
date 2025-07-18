@@ -12,7 +12,7 @@ test_loader = DataLoader(mnist_test, batch_size=100, shuffle=False)
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-torch.manual_seed(0)
+torch.manual_seed(1)
 
 class Flatten(nn.Module):
     def forward(self, x):
@@ -26,17 +26,30 @@ model_cnn = nn.Sequential(nn.Conv2d(1, 32, 3, padding=1), nn.ReLU(),
                           nn.Linear(7*7*64, 100), nn.ReLU(),
                           nn.Linear(100, 10)).to(device)
 
-def pgd_linf(model, X, y, epsilon=0.086, alpha=0.01, num_iter=20, randomize=False):
-    if randomize:
-        delta = torch.rand_like(X, requires_grad=True)
-        delta.data = delta.data * 2 * epsilon - epsilon
-    else:
-        delta = torch.zeros_like(X, requires_grad=True)
+def pgd_linf(model, X, y, epsilon=0.086, alpha=0.01, num_iter=20):
+    delta = torch.zeros_like(X, requires_grad=True)
         
     for t in range(num_iter):
         loss = nn.CrossEntropyLoss()(model(X + delta), y)
         loss.backward()
         delta.data = (delta + alpha*delta.grad.detach().sign()).clamp(-epsilon,epsilon)
+        delta.grad.zero_()
+    return delta.detach()
+
+def pgd_l2(model, X, y, epsilon=2.4, alpha=0.01, num_iter=20):
+    delta = torch.zeros_like(X, requires_grad=True)
+        
+    for t in range(num_iter):
+        loss = nn.CrossEntropyLoss()(model(X + delta), y)
+        loss.backward()
+        
+        # Update delta
+        delta.data = delta.data + alpha * delta.grad.detach()
+        
+        # Project onto L2 ball with radius epsilon
+        delta_norms = torch.norm(delta.data.view(delta.shape[0], -1), dim=1, keepdim=True)
+        delta.data = delta.data / delta_norms.view(-1, 1, 1, 1) * torch.min(delta_norms, torch.tensor(epsilon).to(delta.device)).view(-1, 1, 1, 1)
+        
         delta.grad.zero_()
     return delta.detach()
 
@@ -50,6 +63,8 @@ def epoch(loader, model, opt=None):
             opt.zero_grad()
             loss.backward()
             opt.step()
+            yp = model(X)
+            loss = nn.CrossEntropyLoss()(yp, y)
         total_err += (yp.max(dim=1)[1] != y).sum().item()
         total_loss += loss.item() * X.shape[0]
     return total_err / len(loader.dataset), total_loss / len(loader.dataset)
@@ -68,13 +83,14 @@ def epoch_adversarial(loader, model, attack_fn):
 
 opt = optim.SGD(model_cnn.parameters(), lr=1e-1)
 
-# Run a single trial
-train_err, train_loss = epoch(train_loader, model_cnn, opt)
-test_err, test_loss = epoch(test_loader, model_cnn)
-adv_err, adv_loss = epoch_adversarial(test_loader, model_cnn, pgd_linf)
-print("Trial 1:")
-print("| Train Accuracy:     {:.2f}%".format(100 - train_err * 100))
-print("| Test Accuracy:      {:.2f}%".format(100 - test_err * 100))
-print("| Adversarial Accuracy:  {:.2f}%".format(100 - adv_err * 100))
+# Training the model for 10 epochs
+for epoch_num in range(10):
+    print(f"Epoch {epoch_num+1}:")
+    train_err, train_loss = epoch(train_loader, model_cnn, opt)
+    test_err, test_loss = epoch(test_loader, model_cnn)
+    adv_err, adv_loss = epoch_adversarial(test_loader, model_cnn, pgd_l2)
+    print("| Train Accuracy:     {:.2f}%".format(100 - train_err * 100))
+    print("| Test Accuracy:      {:.2f}%".format(100 - test_err * 100))
+    print("| Adversarial Accuracy:  {:.2f}%".format(100 - adv_err * 100))
 
 torch.save(model_cnn.state_dict(), "model_cnn.pt")
