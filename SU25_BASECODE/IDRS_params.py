@@ -55,16 +55,30 @@ def epoch_params(pretrained, model_sigma, model_mu, loader, *args):
     '''Learns the sigma and mu neural nets. Currently similar code below to epoch_adversarial'''
     total_loss, total_err = 0.,0.
     for X,y in loader:
-        X,y = X.to(device), y.to(device) # X is size (100,1,28,28)
-
+        X,y = X.to(device), y.to(device) # X is size (100,1,28,28)- batch of images
         # Need to implement a smoothing function including model_sigma and model_mu outputs
         sigma = model_sigma(X)  # 100x784 tensor- X is (100,1,28,28)
-        sigma = sigma.detach().cpu().numpy() # now a numpy array
-        sigma_diag= np.diag(sigma[0])  # sigma now 784x784 diagonal numpy array
-        # NOTE: Sigma is a 100x784 array and np.diag wants a row array. The epsilon_adversarial 
-        # code seems to use [0] in places, but I don't know if this is fully correct.
+        sigma_diag = torch.zeros((len(sigma),len(sigma[0]),len(sigma[0]))).to(device)
+        sigma_diag[torch.arange(len(sigma))[:, None], torch.arange(len(sigma[0])), torch.arange(len(sigma[0]))] = sigma
+        sigma_diag = sigma_diag.detach().cpu().numpy()
+
         mu = model_mu(X)        # 100x784 tensor
-        
+        mu = mu.detach().cpu().numpy()
+
+        rng = np.random.default_rng()
+        n_samples = 100
+        epsilon = np.ndarray((len(X),n_samples,28,28))
+        for n in range(len(X)):
+            temp = rng.multivariate_normal(mu[n],sigma_diag[n],size=(n_samples))   # mu must be 1D
+            temp = np.reshape(temp,(n_samples,28,28))
+            epsilon[n] = temp
+
+        epsilon_torch = torch.from_numpy(epsilon).double().to(device)
+
+        X = X.expand(-1, n_samples, -1, -1) # n_samples of each image (second dimension)
+        scores = pretrained(X+epsilon_torch)
+
+        raise KeyboardInterrupt # ending loop for testing purposes
         yp = pretrained(X)
 
         # Use current mu, sigma to get current radii w/ smoothing function
