@@ -6,9 +6,10 @@ class Flatten(nn.Module):
         return x.view(x.shape[0], -1)
 
 class LWRS(nn.Module):
-    def __init__(self, noise_std=0.1):
+    def __init__(self, noise_std=0.1, n_samples=2):
         super(LWRS, self).__init__()
         self.noise_std = noise_std
+        self.n_samples = n_samples
         self.flatten = Flatten()
         self.fc1 = nn.Linear(784, 200)
         self.fc2 = nn.Linear(200, 100)
@@ -16,10 +17,14 @@ class LWRS(nn.Module):
         self.relu = nn.ReLU()
 
     def add_noise(self, x):
+        """
         if self.noise_std > 0:
             noise = self.noise_std * torch.randn_like(x)
             return x + noise
-        return x
+        """
+        x = x.expand(self.n_samples, -1, -1, -1)
+        epsilon = self.noise_std * torch.randn_like(x)
+        return x + epsilon
 
     def forward(self, x):
         x = self.flatten(x)
