@@ -63,6 +63,26 @@ def pgd_linf(model, X, y, epsilon, alpha, num_iter):
         delta.grad.zero_()
     return delta.detach()
 
+#PGD L_2 Attack
+def pgd_l2(model, X, y, epsilon, alpha, num_iter):
+    delta = torch.zeros_like(X, requires_grad=True)
+    for _ in range(num_iter):
+        loss = nn.CrossEntropyLoss()(model(X + delta), y)
+        loss.backward()
+        
+        #Normalize the gradient
+        grad = delta.grad.detach()
+        grad_norm = grad.view(grad.size(0), -1).norm(p=2, dim=1).view(-1,1,1,1).clamp(min=1e-8)
+        delta.data = delta + alpha * grad / grad_norm
+        
+        #Project delta onto the L2 ball of radius epsilon
+        delta_norm = delta.view(delta.size(0), -1).norm(p=2, dim=1).view(-1,1,1,1).clamp(min=1e-8)
+        scaling_factor = torch.min(torch.ones_like(delta_norm), epsilon / delta_norm)
+        delta.data = delta * scaling_factor
+
+        delta.grad.zero_()
+    return delta.detach()
+
 # Model evaluation on clean data
 def evaluate_clean(model, loader):
     model.eval()
@@ -86,8 +106,8 @@ def evaluate_under_attack(model, loader, epsilon, alpha, num_iter):
     return 1 - total_err / len(loader.dataset)
 
 # PGD attack parameters
-training_epsilon = 0.05  # Maximum perturbation
-epsilon = 0.1  # Maximum perturbation
+training_epsilon = 1  # Maximum perturbation during training
+epsilon = 1.5  # Maximum perturbation when attacking the model
 alpha = 0.01 # Step size
 num_iter = 40 # Number of iterations
 
