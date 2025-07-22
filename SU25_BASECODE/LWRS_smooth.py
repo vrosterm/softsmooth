@@ -5,7 +5,7 @@ import os
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 import random
-from SU25_BASECODE.LWRS_model import LWRS
+from LWRS_model import LWRS
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -65,13 +65,22 @@ def evaluate_under_attack(model, loader, epsilon, alpha, num_iter):
     return 1 - total_err / len(loader.dataset)
 
 # PGD attack parameters
+training_epsilon = 0.05  # Maximum perturbation
 epsilon = 0.082  # Maximum perturbation
 alpha = 0.01 # Step size
 num_iter = 40 # Number of iterations
 
+opt_LWRS = optim.SGD(LWRS.parameters(), lr=0.1)
+
+for epoch in range(10):
+        train_err, train_loss = epoch_adversarial(LWRS, train_loader, pgd_linf, LWRS, training_epsilon, alpha, num_iter)
+        train_acc = 1 - train_err
+        print(f"[DNN_2] Epoch {epoch+1}: Train Accuracy = {train_acc:.4f}, Train Loss = {train_loss:.4f}")
+torch.save(LWRS.state_dict(), "LWRS_model_test.pt")
+
 # Load saved LWRS model
 LWRS_model = LWRS().to(device)
-LWRS_model.load_state_dict(torch.load("LWRS_model.pt", map_location=device))
+LWRS_model.load_state_dict(torch.load("LWRS_model_test.pt", map_location=device))
 
 # Evaluating and printing results for LWRS
 clean_acc = evaluate_clean(LWRS_model, test_loader)
