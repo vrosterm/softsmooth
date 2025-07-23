@@ -51,38 +51,51 @@ model_dnn_2 = nn.Sequential(Flatten(), nn.Linear(784,200), nn.ReLU(),
                                 nn.Linear(200,10)).to(device)
 model_dnn_2.load_state_dict(torch.load("model_dnn_2.pt"))
 
+# Inverse of the Gaussian CDF
+def phi_inverse(x, mu):
+    return mu + torch.sqrt(torch.tensor(2)) * torch.erfinv(2 * x - 1)
+
 def epoch_params(pretrained, model_sigma, model_mu, loader, *args):
     '''Learns the sigma and mu neural nets. Currently similar code below to epoch_adversarial'''
     total_loss, total_err = 0.,0.
     for X,y in loader:
-        X,y = X.to(device), y.to(device) # X is size (100,1,28,28)- batch of images
-        # Need to implement a smoothing function including model_sigma and model_mu outputs
-        sigma = model_sigma(X)  # 100x784 tensor- X is (100,1,28,28)
-        sigma_diag = torch.zeros((len(sigma),len(sigma[0]),len(sigma[0]))).to(device)
-        sigma_diag[torch.arange(len(sigma))[:, None], torch.arange(len(sigma[0])), torch.arange(len(sigma[0]))] = sigma
-        sigma_diag = sigma_diag.detach().cpu().numpy()
+        # Getting initial X, y, sigma, mu tensors
+        X,y = X.to(device), y.to(device) # X is shape (100,1,28,28)- batch of images
+        sigma = model_sigma(X)  # (100, 784) tensor- X is (100,1,28,28)
+        sigma_diag = np.zeros((len(sigma),len(sigma[0]),len(sigma[0])))
+        sigma_diag[np.arange(len(sigma))[:, None], np.arange(len(sigma[0])), np.arange(len(sigma[0]))] = sigma.detach().cpu().numpy()
 
-        mu = model_mu(X)        # 100x784 tensor
+        mu = model_mu(X)        # (100, 784) tensor
         mu = mu.detach().cpu().numpy()
 
+        # Using sigma and mu tensors to create random noise with those values
         rng = np.random.default_rng()
-        n_samples = 100
+        n_samples = 50 # Number of each image to create random noise for
         epsilon = np.ndarray((len(X),n_samples,28,28))
         for n in range(len(X)):
-            temp = rng.multivariate_normal(mu[n],sigma_diag[n],size=(n_samples))   # mu must be 1D
+            # Creating random noise with custom mean vector and covariance matrix
+            temp = rng.multivariate_normal(mu[n],sigma_diag[n],size=(n_samples))   # mu must be 1D, temp is (n_samples, 784) tensor
             temp = np.reshape(temp,(n_samples,28,28))
-            epsilon[n] = temp
+            epsilon[n] = temp # Epsilon ends up being (len(X), n_samples, 28, 28)
 
-        epsilon_torch = torch.from_numpy(epsilon).double().to(device)
-
-        X = X.expand(-1, n_samples, -1, -1) # n_samples of each image (second dimension)
-        scores = pretrained(X+epsilon_torch)
-
+        # Getting the scores of the images with random noise added to images
+        epsilon_torch = torch.from_numpy(epsilon).float().to(device)
+        X = X.expand(-1, n_samples, -1, -1) # n_samples of each image (second dimension), (len(X), n_samples, 28, 28) shape
+        scores = torch.zeros((len(X),n_samples,10)).to(device) # shape is (images in batch, n_samples, number of classes)
+        for n in range(len(X)):
+            scores[n] = pretrained(X[n]+epsilon_torch[n])
+        
+        # Getting probabilities of each class, and top 2 likely images based on smoothing
+        probs = torch.softmax(scores, dim=2)    # Softmax each set of scores
+        avg_probs = probs.mean(dim=1)
+        best_scores = torch.topk(avg_probs, 2)
+        
+        # Computing certified radii for each image
+        radii = torch.zeros((len(X)))
+        for n in range(len(avg_probs)):
+            radii[n] = (phi_inverse(torch.tensor(best_scores.values[n][0].item()), 0) - phi_inverse(torch.tensor(best_scores.values[n][1].item()), 0)) / 2
         raise KeyboardInterrupt # ending loop for testing purposes
-        yp = pretrained(X)
 
-        # Use current mu, sigma to get current radii w/ smoothing function
-        # Use current radii to compute next mu, sigma
 
         # Computing loss- sum of radii
         num_radii = 10 # arbitrary, num of radii to average over (N)
@@ -100,6 +113,7 @@ def epoch_params(pretrained, model_sigma, model_mu, loader, *args):
     return total_err / len(loader.dataset), total_loss / len(loader.dataset)
 
 # Copied from train_save_smooth
+training_epsilon = 0.05  # Maximum perturbation
 epsilon = 0.1  # Maximum perturbation
 alpha = 0.01 # Step size
 num_iter = 40 # Number of iterations
@@ -108,5 +122,5 @@ num_iter = 40 # Number of iterations
 if not os.path.exists("model_IDRS.pt"):
     opt = optim.SGD(model_dnn_2.parameters(), lr=0.1)
     for _ in range(10):
-        epoch_params(model_dnn_2, model_sigma, model_mu, train_loader)
+        epoch_params(model_dnn_2, model_sigma, model_mu, train_loader, training_epsilon, alpha, num_iter)
     torch.save(model_dnn_2.state_dict(), "model_IDRS.pt")

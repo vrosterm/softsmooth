@@ -13,44 +13,19 @@ mnist_train = datasets.MNIST("../data", train=True, download=True, transform=tra
 mnist_test = datasets.MNIST("../data", train=False, download=True, transform=transforms.ToTensor())
 train_loader = DataLoader(mnist_train, batch_size = 100, shuffle=True)
 test_loader = DataLoader(mnist_test, batch_size = 100, shuffle=False)
+ 
 
+# Load existing model- edit this to change which model is loaded and its structure
 class Flatten(nn.Module):
     def forward(self, x):
-        return x.view(x.shape[0], -1)  
+        return x.view(x.shape[0], -1)
+    
+model_dnn_2 = nn.Sequential(
+    Flatten(), nn.Linear(784,200), nn.ReLU(), 
+    nn.Linear(200,10)
+).to(device)
 
-try:
-    model_dnn_2 = nn.Sequential(Flatten(), nn.Linear(784,200), nn.ReLU(), 
-                                nn.Linear(200,10)).to(device)
-    model_dnn_2.load_state_dict(torch.load("model_dnn_2.pt"))
-    print("model loaded!")
-except: 
-    print("model not found- training model")
-    def epoch(loader, model, opt=None):
-        total_loss, total_err = 0.,0.
-        for X,y in loader:
-            X,y = X.to(device), y.to(device)
-            yp = model(X)
-            loss = nn.CrossEntropyLoss()(yp,y)
-            if opt:
-                opt.zero_grad()
-                loss.backward()
-                opt.step()
-            
-            total_err += (yp.max(dim=1)[1] != y).sum().item()
-            total_loss += loss.item() * X.shape[0]
-        return total_err / len(loader.dataset), total_loss / len(loader.dataset)
-
-    opt = optim.SGD(model_dnn_2.parameters(), lr=1e-1)
-
-    print("TrainError\tTrainLoss\tTestError\tTestLoss")
-    for _ in range(10):
-        train_err, train_loss = epoch(train_loader, model_dnn_2, opt)
-        test_err, test_loss = epoch(test_loader, model_dnn_2)
-        print(*("{:.6f}".format(i) for i in (train_err, train_loss, test_err, test_loss)), sep="\t")
-
-    torch.save(model_dnn_2.state_dict(), "model_dnn_2.pt")
-    print("trained!")
-
+model_dnn_2.load_state_dict(torch.load("model_dnn_2.pt"))
 
 def waterfall_limited(model,sigma=[0.25,0.5,0.75,1],n_test_images=500):
     '''Function to create a waterfall plot based on a limited/partial set of the
@@ -91,7 +66,7 @@ def waterfall_limited(model,sigma=[0.25,0.5,0.75,1],n_test_images=500):
     pyplot.ylabel("certified accuracy")
     pyplot.xlim(0,2)
     pyplot.ylim(0,1)
-    pyplot.title(f"sigma = {sigma}")
+    pyplot.title(f"partial data set, n_test_images = {n_test_images}, sigma = {sigma}")
     pyplot.legend()
     pyplot.show()
 
@@ -132,7 +107,7 @@ def waterfall_full(model,sigma=[0.25,0.5,0.75,1]):
     pyplot.ylabel("certified accuracy")
     pyplot.xlim(0,2)
     pyplot.ylim(0,1)
-    pyplot.title(f"sigma = {sigma}")
+    pyplot.title(f"full data set, sigma = {sigma}")
     pyplot.legend()
     pyplot.show()
 
