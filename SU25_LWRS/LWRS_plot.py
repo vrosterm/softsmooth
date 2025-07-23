@@ -5,28 +5,13 @@ from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 from matplotlib import pyplot
 from numpy import linspace
-from SU25_BASECODE.LWRS_model import LWRS  # Import model
+from LWRS_model import LWRS  # Import model
 from tqdm import tqdm
+from SU25_BASECODE.train_save_smooth import phi_inverse, smooth
 
 # Don't need the FutureWarning message
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
-
-# Inverse of the Gaussian CDF
-def phi_inverse(x, mu):
-    return mu + torch.sqrt(torch.tensor(2)) * torch.erfinv(2 * x - 1)
-
-# Smooth function for certified radius. Uses softmax to obtain vectors with entries in [0,1] that sum to 1 so they can be inputted into erfinv.
-def smooth(x, model, sigma, n_samples=1000):
-    x = x.expand(n_samples, -1, -1, -1)
-    epsilon = sigma * torch.randn_like(x)
-    scores = model(x + epsilon) 
-    probs = torch.softmax(scores, dim=1)    
-    avg_probs = probs.mean(dim=0)           
-    label = torch.argmax(avg_probs)
-    best_scores = torch.topk(avg_probs, 2)          
-    radius = sigma * (phi_inverse(torch.tensor(best_scores.values[0].item()), 0) - phi_inverse(torch.tensor(best_scores.values[1].item()), 0)) / 2
-    return label.item(), radius.item()
 
 # Apply CPU or cuda device
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -36,14 +21,14 @@ mnist_test = datasets.MNIST("../data", train=False, download=True, transform=tra
 train_loader = DataLoader(mnist_train, batch_size = 100, shuffle=True)
 test_loader = DataLoader(mnist_test, batch_size = 100, shuffle=False)
 
+# Load LWRS model from file
+LWRS_model = LWRS().to(device)
+LWRS_model.load_state_dict(torch.load("models/LWRS_model.pt"))
+print("model loaded!")
+
 class Flatten(nn.Module):
     def forward(self, x):
         return x.view(x.shape[0], -1)  
-
-# Load LWRS model from file
-LWRS_model = LWRS().to(device)
-LWRS_model.load_state_dict(torch.load("LWRS_model.pt"))
-print("model loaded!")
 
 # Function to create a waterfall plot
 def waterfall_plot(model, sigma=[0.25,0.5,0.75,1], n_test_images=500):
@@ -88,5 +73,5 @@ def waterfall_plot(model, sigma=[0.25,0.5,0.75,1], n_test_images=500):
     pyplot.show()
 
 #testing waterfall_plot
-
-waterfall_plot(LWRS_model)
+if __name__ == '_main__': 
+    waterfall_plot(LWRS_model)
