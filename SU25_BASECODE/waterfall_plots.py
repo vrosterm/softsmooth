@@ -25,7 +25,7 @@ model_dnn_2 = nn.Sequential(
     nn.Linear(200,10)
 ).to(device)
 
-model_dnn_2.load_state_dict(torch.load("model_dnn_2.pt"))
+model_dnn_2.load_state_dict(torch.load("models/model_dnn_2.pt"))
 
 def waterfall_limited(model,sigma=[0.25,0.5,0.75,1],n_test_images=500):
     '''Function to create a waterfall plot based on a limited/partial set of the
