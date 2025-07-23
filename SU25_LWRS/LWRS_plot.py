@@ -1,3 +1,7 @@
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -23,7 +27,7 @@ test_loader = DataLoader(mnist_test, batch_size = 100, shuffle=False)
 
 # Load LWRS model from file
 LWRS_model = LWRS().to(device)
-LWRS_model.load_state_dict(torch.load("models/LWRS_model.pt"))
+LWRS_model.load_state_dict(torch.load("SU25_LWRS/models/LWRS_model_test.pt"))
 print("model loaded!")
 
 class Flatten(nn.Module):
@@ -73,5 +77,4 @@ def waterfall_plot(model, sigma=[0.25,0.5,0.75,1], n_test_images=500):
     pyplot.show()
 
 #testing waterfall_plot
-if __name__ == '_main__': 
-    waterfall_plot(LWRS_model)
+waterfall_plot(LWRS_model)
