@@ -7,7 +7,6 @@ from torch.utils.data import DataLoader
 import random
 import numpy as np
 
-
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 class Flatten(nn.Module):
@@ -51,12 +50,8 @@ model_dnn_2 = nn.Sequential(Flatten(), nn.Linear(784,200), nn.ReLU(),
                                 nn.Linear(200,10)).to(device)
 model_dnn_2.load_state_dict(torch.load("model_dnn_2.pt"))
 
-# Inverse of the Gaussian CDF
-def phi_inverse(x, mu):
-    return mu + torch.sqrt(torch.tensor(2)) * torch.erfinv(2 * x - 1)
-
 def epoch_params(pretrained, model_sigma, model_mu, loader, *args):
-    '''Learns the sigma and mu neural nets. Currently similar code below to epoch_adversarial'''
+    '''Learns the sigma and mu neural nets. Incomplete.'''
     total_loss, total_err = 0.,0.
     for X,y in loader:
         # Getting initial X, y, sigma, mu tensors
@@ -70,7 +65,7 @@ def epoch_params(pretrained, model_sigma, model_mu, loader, *args):
 
         # Using sigma and mu tensors to create random noise with those values
         rng = np.random.default_rng()
-        n_samples = 50 # Number of each image to create random noise for
+        n_samples = 50 # Number of each image to create random noise for. Make this an input argument?
         epsilon = np.ndarray((len(X),n_samples,28,28))
         for n in range(len(X)):
             # Creating random noise with custom mean vector and covariance matrix
@@ -93,23 +88,41 @@ def epoch_params(pretrained, model_sigma, model_mu, loader, *args):
         # Computing certified radii for each image
         radii = torch.zeros((len(X)))
         for n in range(len(avg_probs)):
-            radii[n] = (phi_inverse(torch.tensor(best_scores.values[n][0].item()), 0) - phi_inverse(torch.tensor(best_scores.values[n][1].item()), 0)) / 2
-        raise KeyboardInterrupt # ending loop for testing purposes
-
-
-        # Computing loss- sum of radii
-        num_radii = 10 # arbitrary, num of radii to average over (N)
-        for n in range(num_radii):
+            radii[n] = (best_scores.values[n][0].item() - best_scores.values[n][1].item()) / 2  # Still need to incorporate Lipschitz constant
         
-            loss = nn.CrossEntropyLoss()(yp,y) # Make this custom
+        # Computing ACR
+        acr = sum(radii)/len(radii)
+       
+        # Computing losses and optimizing
+        spectral_sigma = []
+        spectral_mu = []
+        lam = 0.3   # lambda
+        n_layers = 4    # number of layers in neural net. Maybe make this an input argument?
+        L_const = 1.5**(1/n_layers) # Modified Lipschitz constant. Maybe make the 1.5 stand-in an input argument?
 
         if opt:
             opt.zero_grad()
             loss.backward()
             opt.step()
+
+            # New lines- reweighting layers based on spectral weight calculation
+            for name, param in model_sigma.named_parameters():    # mu and sigma models
+                name=name.lstrip("1234567890.")
+                if name == "weight":
+                    # Weight layers only. L_const is currently taken to be Lipschitz constant ^ (1/n_layers)
+                    spectral_sigma.append(torch.linalg.matrix_norm(param.data,ord=2).item())
+                    param.data =  L_const*(param.data/spectral_sigma[-1])
+
+            for name, param in model_mu.named_parameters():    # mu and sigma models
+                name=name.lstrip("1234567890.")
+                if name == "weight":
+                    # Weight layers only. L_const is currently taken to be Lipschitz constant ^ (1/n_layers)
+                    spectral_mu.append(torch.linalg.matrix_norm(param.data,ord=2).item())
+                    param.data =  L_const*(param.data/spectral_mu[-1])
+
         
-        total_err += (yp.max(dim=1)[1] != y).sum().item()
-        total_loss += loss.item() * X.shape[0]
+        total_err += (yp.max(dim=1)[1] != y).sum().item()   # Modify since we no longer have yp in the current version.
+        total_loss += loss.item() * X.shape[0] # Add on lambda*sum(spectralnorms). We have norms for both mu and sigma.
     return total_err / len(loader.dataset), total_loss / len(loader.dataset)
 
 # Copied from train_save_smooth
