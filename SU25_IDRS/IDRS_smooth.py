@@ -44,6 +44,6 @@ def IDRS_matrices(pretrained, mu, sigma, X, n_samples=50):
     g = torch.topk(avg_probs, 2)
     yp = []
     for n in range(len(scores)):
-        yp.append(np.argmax(scores[n]).item())
+        yp.append(np.argmax(scores[n].detach().cpu().numpy()).item())
 
     return g, yp

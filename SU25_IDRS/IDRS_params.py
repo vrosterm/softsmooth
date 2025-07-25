@@ -6,6 +6,7 @@ from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 import random
 import numpy as np
+from IDRS_smooth import IDRS_matrices
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -50,7 +51,7 @@ model_dnn_2 = nn.Sequential(Flatten(), nn.Linear(784,200), nn.ReLU(),
                                 nn.Linear(200,10)).to(device)
 model_dnn_2.load_state_dict(torch.load("model_dnn_2.pt"))
 
-def epoch_params(pretrained, model_sigma, model_mu, loader, *args):
+def epoch_params(pretrained, model_sigma, model_mu, loader, *args, lam=0.3, L=1.0,):
     '''Learns the sigma and mu neural nets. Incomplete.'''
     total_loss, total_err = 0.,0.
     for X,y in loader:
@@ -59,55 +60,45 @@ def epoch_params(pretrained, model_sigma, model_mu, loader, *args):
         sigma = model_sigma(X)  # (100, 784) tensor- X is (100,1,28,28)
         sigma_diag = np.zeros((len(sigma),len(sigma[0]),len(sigma[0])))
         sigma_diag[np.arange(len(sigma))[:, None], np.arange(len(sigma[0])), np.arange(len(sigma[0]))] = sigma.detach().cpu().numpy()
+        # Squaring the given sigma^1/2 matrices
+        sigma_diag = np.matmul(sigma_diag,sigma_diag)
 
         mu = model_mu(X)        # (100, 784) tensor
         mu = mu.detach().cpu().numpy()
 
-        # Using sigma and mu tensors to create random noise with those values
-        rng = np.random.default_rng()
-        n_samples = 50 # Number of each image to create random noise for. Make this an input argument?
-        epsilon = np.ndarray((len(X),n_samples,28,28))
-        for n in range(len(X)):
-            # Creating random noise with custom mean vector and covariance matrix
-            temp = rng.multivariate_normal(mu[n],sigma_diag[n],size=(n_samples))   # mu must be 1D, temp is (n_samples, 784) tensor
-            temp = np.reshape(temp,(n_samples,28,28))
-            epsilon[n] = temp # Epsilon ends up being (len(X), n_samples, 28, 28)
-
-        # Getting the scores of the images with random noise added to images
-        epsilon_torch = torch.from_numpy(epsilon).float().to(device)
-        X = X.expand(-1, n_samples, -1, -1) # n_samples of each image (second dimension), (len(X), n_samples, 28, 28) shape
-        scores = torch.zeros((len(X),n_samples,10)).to(device) # shape is (images in batch, n_samples, number of classes)
-        for n in range(len(X)):
-            scores[n] = pretrained(X[n]+epsilon_torch[n])
-        
-        # Getting probabilities of each class, and top 2 likely images based on smoothing
-        probs = torch.softmax(scores, dim=2)    # Softmax each set of scores
-        avg_probs = probs.mean(dim=1)
-        best_scores = torch.topk(avg_probs, 2)
-        
+        # Calling new randomized smoothing function. g is the top 2 items, yp is predicted labels.
+        g, yp = IDRS_matrices(pretrained, mu, sigma_diag, X, n_samples=50)
+               
         # Computing certified radii for each image
         radii = torch.zeros((len(X)))
-        for n in range(len(avg_probs)):
-            radii[n] = (best_scores.values[n][0].item() - best_scores.values[n][1].item()) / 2  # Still need to incorporate Lipschitz constant
+        for n in range(len(X)):
+            # Only overwrite the 0 if the predicted class equals the actual class
+            if yp[n] == y[n]:
+                radii[n] = (g.values[n][0].item() - g.values[n][1].item()) / 2  # Still need to incorporate Lipschitz constant
         
-        # Computing ACR
-        acr = sum(radii)/len(radii)
+        # Computing ACR/loss. Could combine into one line if we want.
+        acr = (sum(radii)/len(radii)).detach().cpu().item()
+        loss = -acr
        
         # Ben's code with Faith's norm calculation
         spec_reg = 0.0
-        for layer in model:
+        for layer in pretrained:
             if isinstance(layer, nn.Linear):
                 spec_norm = torch.linalg.matrix_norm(layer.weight) #matrix_norm is more than 10x faster than SVD
                 spec_reg += spec_norm
 
         loss += lam * spec_reg
-        num_linear_layers = sum(1 for layer in model if isinstance(layer, nn.Linear))
+        num_linear_layers = sum(1 for layer in model_sigma if isinstance(layer, nn.Linear)) # Gonna want to make this the layers in the combined mu/sigma model
         L_const = L ** (1 / num_linear_layers) # We might want to feed our chosen L into the function parameters
-
+        
         if opt:
             opt.zero_grad()
             loss.backward()
             opt.step()
+
+            # Rewrite below once mu and sigma models are a single model
+            spectral_sigma = []
+            spectral_mu = []
 
             # New lines- reweighting layers based on spectral weight calculation
             for name, param in model_sigma.named_parameters():    # mu and sigma models
@@ -125,7 +116,7 @@ def epoch_params(pretrained, model_sigma, model_mu, loader, *args):
                     param.data =  L_const*(param.data/spectral_mu[-1])
 
         
-        total_err += (yp.max(dim=1)[1] != y).sum().item()   # Modify since we no longer have yp in the current version.
+        total_err += (yp.max(dim=1)[1] != y).sum().item()
         total_loss += loss.item() * X.shape[0] # Add on lambda*sum(spectralnorms). We have norms for both mu and sigma.
     return total_err / len(loader.dataset), total_loss / len(loader.dataset)
 
@@ -139,5 +130,5 @@ num_iter = 40 # Number of iterations
 if not os.path.exists("model_IDRS.pt"):
     opt = optim.SGD(model_dnn_2.parameters(), lr=0.1)
     for _ in range(10):
-        epoch_params(model_dnn_2, model_sigma, model_mu, train_loader, training_epsilon, alpha, num_iter)
+        epoch_params(model_dnn_2, model_sigma, model_mu, train_loader, training_epsilon, alpha, num_iter, lam=0.3, L=1.0)
     torch.save(model_dnn_2.state_dict(), "model_IDRS.pt")
