@@ -93,12 +93,16 @@ def epoch_params(pretrained, model_sigma, model_mu, loader, *args):
         # Computing ACR
         acr = sum(radii)/len(radii)
        
-        # Computing losses and optimizing
-        spectral_sigma = []
-        spectral_mu = []
-        lam = 0.3   # lambda
-        n_layers = 4    # number of layers in neural net. Maybe make this an input argument?
-        L_const = 1.5**(1/n_layers) # Modified Lipschitz constant. Maybe make the 1.5 stand-in an input argument?
+        # Ben's code with Faith's norm calculation
+        spec_reg = 0.0
+        for layer in model:
+            if isinstance(layer, nn.Linear):
+                spec_norm = torch.linalg.matrix_norm(layer.weight) #matrix_norm is more than 10x faster than SVD
+                spec_reg += spec_norm
+
+        loss += lam * spec_reg
+        num_linear_layers = sum(1 for layer in model if isinstance(layer, nn.Linear))
+        L_const = L ** (1 / num_linear_layers) # We might want to feed our chosen L into the function parameters
 
         if opt:
             opt.zero_grad()
