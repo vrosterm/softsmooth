@@ -49,7 +49,7 @@ test_loader = DataLoader(mnist_test, batch_size=100, shuffle=False)
 # Loading the pretrained model. Currently the 2 layer NN.
 model_dnn_2 = nn.Sequential(Flatten(), nn.Linear(784,200), nn.ReLU(), 
                                 nn.Linear(200,10)).to(device)
-model_dnn_2.load_state_dict(torch.load("model_dnn_2.pt"))
+model_dnn_2.load_state_dict(torch.load("model_dnn_2.pt", map_location=device, weights_only=True))
 
 def epoch_params(pretrained, model_sigma, model_mu, loader, *args, lam=0.3, L=1.0,):
     '''Learns the sigma and mu neural nets. Incomplete.'''
@@ -80,7 +80,6 @@ def epoch_params(pretrained, model_sigma, model_mu, loader, *args, lam=0.3, L=1.
         acr = (sum(radii)/len(radii)).detach().cpu().item()
         loss = -acr
        
-        # Ben's code with Faith's norm calculation
         spec_reg = 0.0
         for layer in pretrained:
             if isinstance(layer, nn.Linear):
@@ -88,7 +87,7 @@ def epoch_params(pretrained, model_sigma, model_mu, loader, *args, lam=0.3, L=1.
                 spec_reg += spec_norm
 
         loss += lam * spec_reg
-        num_linear_layers = sum(1 for layer in model_sigma if isinstance(layer, nn.Linear)) # Gonna want to make this the layers in the combined mu/sigma model
+        num_linear_layers = sum(1 for layer in model_sigma if isinstance(layer, nn.Linear)) # Will want to make this the layers in the combined mu/sigma model
         L_const = L ** (1 / num_linear_layers) # We might want to feed our chosen L into the function parameters
         
         if opt:
@@ -99,24 +98,27 @@ def epoch_params(pretrained, model_sigma, model_mu, loader, *args, lam=0.3, L=1.
             # Rewrite below once mu and sigma models are a single model
             spectral_sigma = []
             spectral_mu = []
+            
+            #New weight normalization step without parsing through parameter names
+            for layer in model_sigma:
+                if isinstance(layer, nn.Linear):
+                    weight = layer.weight.data
+                    spec_norm = torch.linalg.matrix_norm(weight)
+                    spectral_sigma.append(spec_norm.item())
+                    norm_weight = L_const * weight / spec_norm
+                    layer.weight.data.copy_(norm_weight)
 
-            # New lines- reweighting layers based on spectral weight calculation
-            for name, param in model_sigma.named_parameters():    # mu and sigma models
-                name=name.lstrip("1234567890.")
-                if name == "weight":
-                    # Weight layers only. L_const is currently taken to be Lipschitz constant ^ (1/n_layers)
-                    spectral_sigma.append(torch.linalg.matrix_norm(param.data,ord=2).item())
-                    param.data =  L_const*(param.data/spectral_sigma[-1])
-
-            for name, param in model_mu.named_parameters():    # mu and sigma models
-                name=name.lstrip("1234567890.")
-                if name == "weight":
-                    # Weight layers only. L_const is currently taken to be Lipschitz constant ^ (1/n_layers)
-                    spectral_mu.append(torch.linalg.matrix_norm(param.data,ord=2).item())
-                    param.data =  L_const*(param.data/spectral_mu[-1])
+            for layer in model_mu:
+                if isinstance(layer, nn.Linear):
+                    weight = layer.weight.data
+                    spec_norm = torch.linalg.matrix_norm(weight)
+                    spectral_mu.append(spec_norm.item())
+                    norm_weight = L_const * weight / spec_norm
+                    layer.weight.data.copy_(norm_weight)
 
         
-        total_err += (yp.max(dim=1)[1] != y).sum().item()
+        yp_tensor = torch.tensor(yp, device=y.device)
+        total_err += (yp_tensor != y).sum().item()
         total_loss += loss.item() * X.shape[0] # Add on lambda*sum(spectralnorms). We have norms for both mu and sigma.
     return total_err / len(loader.dataset), total_loss / len(loader.dataset)
 
