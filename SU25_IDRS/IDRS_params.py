@@ -29,17 +29,21 @@ class Bias(nn.Module):
     
 class ReLUBias(nn.Module):
     '''ReLU and Bias layer applied to only the second half of the neural net
-    (the half with sigma)'''
+    (the half with sigma)
+    
+    Learnable bias layer modified from https://discuss.pytorch.org/t/learnable-bias-layer/4221'''
     
     def __init__(self) -> None:
         super().__init__()
         self.bias = nn.Parameter(torch.ones(1)*0.1)
+        self.lin1 = nn.Linear(784,1)
     def forward(self, x):
         # In our current mu/sigma network, x is a FloatTensor of shape (100,1568).
         L = len(x[0])//2
-        sigma_vals = x[:,L:]
+        sigma_vals = x[:,L:]    # (100, 784) tensor
         sigma_vals = F.relu(sigma_vals) # ReLU
-        sigma_vals += 0.1               # Bias
+        bias = self.lin1(sigma_vals)    # (100, 1) tensor
+        sigma_vals += bias              # Bias
         x[:,L:] = sigma_vals
         return x
 
@@ -76,7 +80,7 @@ model_dnn_2 = nn.Sequential(Flatten(), nn.Linear(784,200), nn.ReLU(),
 model_dnn_2.load_state_dict(torch.load("model_dnn_2.pt", map_location=device, weights_only=True))
 
 def epoch_params(pretrained, model_params, loader, *args, lam=0.3, L=1.0,):
-    '''Learns the sigma and mu neural nets. Incomplete.'''
+    '''Learns the sigma and mu neural nets.'''
     total_loss, total_err = 0.,0.
     for X,y in loader:
         # Getting initial X, y, output tensors
@@ -137,7 +141,6 @@ def epoch_params(pretrained, model_params, loader, *args, lam=0.3, L=1.0,):
         yp_tensor = torch.tensor(yp, device=y.device)
         total_err += (yp_tensor != y).sum().item()
         total_loss += loss.item() * X.shape[0]
-        raise KeyboardInterrupt
     return total_err / len(loader.dataset), total_loss / len(loader.dataset)
 
 # Copied from train_save_smooth
