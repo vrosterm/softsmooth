@@ -29,21 +29,17 @@ class Bias(nn.Module):
     
 class ReLUBias(nn.Module):
     '''ReLU and Bias layer applied to only the second half of the neural net
-    (the half with sigma)
-    
-    Learnable bias layer modified from https://discuss.pytorch.org/t/learnable-bias-layer/4221'''
+    (the half with sigma)'''
     
     def __init__(self) -> None:
         super().__init__()
         self.bias = nn.Parameter(torch.ones(1)*0.1)
-        self.lin1 = nn.Linear(784,1)
     def forward(self, x):
         # In our current mu/sigma network, x is a FloatTensor of shape (100,1568).
         L = len(x[0])//2
-        sigma_vals = x[:,L:]    # (100, 784) tensor
+        sigma_vals = x[:,L:]
         sigma_vals = F.relu(sigma_vals) # ReLU
-        bias = self.lin1(sigma_vals)    # (100, 1) tensor
-        sigma_vals += bias              # Bias
+        sigma_vals += 0.1               # Bias
         x[:,L:] = sigma_vals
         return x
 
@@ -80,8 +76,18 @@ model_dnn_2 = nn.Sequential(Flatten(), nn.Linear(784,200), nn.ReLU(),
 model_dnn_2.load_state_dict(torch.load("model_dnn_2.pt", map_location=device, weights_only=True))
 
 def epoch_params(pretrained, model_params, loader, *args, lam=0.3, L=1.0,):
-    '''Learns the sigma and mu neural nets.'''
+    '''Learns the sigma and mu neural nets. Incomplete.'''
     total_loss, total_err = 0.,0.
+
+    #Computing the Lipschitz constant for the pretrained model
+    lip_g = 1.0
+    for layer in pretrained:
+        if isinstance(layer, nn.Linear):
+            weight_norm = torch.linalg.matrix_norm(layer.weight)
+            lip_g *= weight_norm
+
+    L_max = lip_g * (1 + torch.sqrt(L ** 2 + L ** 2)) # Lipschitz constant for the mu/sigma model
+
     for X,y in loader:
         # Getting initial X, y, output tensors
         X,y = X.to(device), y.to(device) # X is shape (100,1,28,28)- batch of images
@@ -106,21 +112,20 @@ def epoch_params(pretrained, model_params, loader, *args, lam=0.3, L=1.0,):
         for n in range(len(X)):
             # Only overwrite the 0 if the predicted class equals the actual class
             if yp[n] == y[n]:
-                radii[n] = (g.values[n][0].item() - g.values[n][1].item()) / 2  # Still need to incorporate Lipschitz constant
-        
-        # Computing ACR/loss. Could combine into one line if we want.
-        acr = (sum(radii)/len(radii)).detach().cpu().item()
-        loss = -acr
-       
+                radii[n] = (g.values[n][0].item() - g.values[n][1].item()) / (2 * L_max)
+
         spec_reg = 0.0
-        for layer in pretrained:
+        for layer in model_params:
             if isinstance(layer, nn.Linear):
                 spec_norm = torch.linalg.matrix_norm(layer.weight) #matrix_norm is more than 10x faster than SVD
                 spec_reg += spec_norm
+        
+        # Computing ACR/loss. Could combine into one line if we want.
+        acr = (sum(radii)/len(radii)).detach().cpu().item()
+        loss = -acr + lam * spec_reg
 
-        loss += lam * spec_reg
         num_linear_layers = sum(1 for layer in model_params if isinstance(layer, nn.Linear)) # Will want to make this the layers in the combined mu/sigma model
-        L_const = L ** (1 / num_linear_layers) # We might want to feed our chosen L into the function parameters
+        L_const = L_max ** (1 / num_linear_layers) 
         
         if opt:
             opt.zero_grad()
@@ -141,6 +146,7 @@ def epoch_params(pretrained, model_params, loader, *args, lam=0.3, L=1.0,):
         yp_tensor = torch.tensor(yp, device=y.device)
         total_err += (yp_tensor != y).sum().item()
         total_loss += loss.item() * X.shape[0]
+        raise KeyboardInterrupt
     return total_err / len(loader.dataset), total_loss / len(loader.dataset)
 
 # Copied from train_save_smooth
