@@ -95,10 +95,10 @@ def epoch_params(pretrained, model_params, loader, *args, lam=0.3, L=1.0,):
             lip_g *= weight_norm
 
     L_max = lip_g * (1 + ((L ** 2 + L ** 2)**(1/2))) # Lipschitz constant for the mu/sigma model
-    tempxy = 1
     for X,y in loader:
         # Getting initial X, y, output tensors
         X,y = X.to(device), y.to(device) # X is shape (100,1,28,28)- batch of images
+
         outputs = model_params(X)  # (100, 1568) tensor- X is (100,1,28,28)
         
         # Organizing mu from outputs. Means are the first 784 values.
@@ -159,9 +159,16 @@ epsilon = 0.1  # Maximum perturbation
 alpha = 0.01 # Step size
 num_iter = 40 # Number of iterations
 
+print("Begin training")
+t = time.time()
 # Train and save models if not already saved
 if not os.path.exists("model_IDRS.pt"):
     opt = optim.SGD(model_dnn_4.parameters(), lr=0.1)
+    t1 = time.time()
     for n in range(10):
+        t0 = t1
         epoch_params(model_dnn_4, model_mu_sig, train_loader, training_epsilon, alpha, num_iter, lam=0.3, L=1.0)
+        t1 = time.time()
+        print(f"Epoch {n+1} time: {t1-t0}")
+    print(f"Total time: {t1-t}")
     torch.save(model_mu_sig.state_dict(), "model_IDRS.pt")
