@@ -8,6 +8,9 @@ from torch.utils.data import DataLoader
 import random
 import numpy as np
 from IDRS_smooth import IDRS_matrices
+import time
+
+t = time.time()
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -78,7 +81,7 @@ test_loader = DataLoader(mnist_test, batch_size=100, shuffle=False)
 model_dnn_4 = nn.Sequential(nn.Flatten(), nn.Linear(784,200), nn.ReLU(), 
     nn.Linear(200,100), nn.ReLU(), nn.Linear(100,100), nn.ReLU(),
     nn.Linear(100,10)).to(device)
-model_dnn_4.load_state_dict(torch.load("model_dnn_2.pt", map_location=device, weights_only=True))
+model_dnn_4.load_state_dict(torch.load("model_dnn_4.pt", map_location=device, weights_only=True))
 
 def epoch_params(pretrained, model_params, loader, *args, lam=0.3, L=1.0,):
     '''Learns the sigma and mu neural nets.'''
@@ -91,8 +94,8 @@ def epoch_params(pretrained, model_params, loader, *args, lam=0.3, L=1.0,):
             weight_norm = torch.linalg.matrix_norm(layer.weight)
             lip_g *= weight_norm
 
-    L_max = lip_g * (1 + torch.sqrt(L ** 2 + L ** 2)) # Lipschitz constant for the mu/sigma model
-
+    L_max = lip_g * (1 + ((L ** 2 + L ** 2)**(1/2))) # Lipschitz constant for the mu/sigma model
+    tempxy = 1
     for X,y in loader:
         # Getting initial X, y, output tensors
         X,y = X.to(device), y.to(device) # X is shape (100,1,28,28)- batch of images
@@ -110,7 +113,7 @@ def epoch_params(pretrained, model_params, loader, *args, lam=0.3, L=1.0,):
         sigma_diag = np.matmul(sigma_diag,sigma_diag)
         
         # Calling new randomized smoothing function. g is the top 2 items, yp is predicted labels.
-        g, yp = IDRS_matrices(pretrained, mu, sigma_diag, X, n_samples=50)
+        g, yp = IDRS_matrices(pretrained, mu, sigma_diag, X, n_samples=10)
                
         # Computing certified radii for each image
         radii = torch.zeros((len(X)))
@@ -159,6 +162,6 @@ num_iter = 40 # Number of iterations
 # Train and save models if not already saved
 if not os.path.exists("model_IDRS.pt"):
     opt = optim.SGD(model_dnn_4.parameters(), lr=0.1)
-    for _ in range(10):
+    for n in range(10):
         epoch_params(model_dnn_4, model_mu_sig, train_loader, training_epsilon, alpha, num_iter, lam=0.3, L=1.0)
     torch.save(model_mu_sig.state_dict(), "model_IDRS.pt")
