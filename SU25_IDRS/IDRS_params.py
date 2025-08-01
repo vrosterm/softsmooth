@@ -78,12 +78,13 @@ train_loader = DataLoader(mnist_train, batch_size=100, shuffle=True)
 test_loader = DataLoader(mnist_test, batch_size=100, shuffle=False)
 
 # Loading the pretrained model. Currently the  layer NN.
-model_dnn_4 = nn.Sequential(nn.Flatten(), nn.Linear(784,200), nn.ReLU(), 
-    nn.Linear(200,100), nn.ReLU(), nn.Linear(100,100), nn.ReLU(),
-    nn.Linear(100,10)).to(device)
-model_dnn_4.load_state_dict(torch.load("model_dnn_4.pt", map_location=device, weights_only=True))
+pretrained = nn.Sequential(nn.Flatten(), nn.Linear(784,200), nn.ReLU(), 
+                            nn.Linear(200,100), nn.ReLU(),
+                            nn.Linear(100,100), nn.ReLU(),
+                            nn.Linear(100,10)).to(device)
+pretrained.load_state_dict(torch.load("softsmooth/SU25_BASECODE/models/dnn_4_l2_pgd_epsilon_1.pt", map_location=device, weights_only=True))
 
-def epoch_params(pretrained, model_params, loader, lam=0.3, L=1.0,):
+def epoch_params(pretrained, model_params, loader, lam=0.01, L=10.0,):
     '''Learns the sigma and mu neural nets.'''
     total_loss, total_err = 0.,0.
     acr = []
@@ -94,6 +95,7 @@ def epoch_params(pretrained, model_params, loader, lam=0.3, L=1.0,):
         if isinstance(layer, nn.Linear):
             weight_norm = torch.linalg.matrix_norm(layer.weight)
             lip_g *= weight_norm
+    print(f"lip_g: {lip_g}")
 
     L_max = lip_g * (1 + ((L ** 2 + L ** 2)**(1/2))) # Lipschitz constant for the mu/sigma model
     for X,y in loader:
@@ -135,7 +137,7 @@ def epoch_params(pretrained, model_params, loader, lam=0.3, L=1.0,):
         loss = -acr[-1] + lam * spec_reg
 
         num_linear_layers = sum(1 for layer in model_params if isinstance(layer, nn.Linear)) # Will want to make this the layers in the combined mu/sigma model
-        L_const = L_max ** (1 / num_linear_layers) 
+        L_const = L ** (1 / num_linear_layers) 
         
         if opt:
             opt.zero_grad()
@@ -157,12 +159,6 @@ def epoch_params(pretrained, model_params, loader, lam=0.3, L=1.0,):
     cert_rad = sum(acr)/len(acr)
     return total_err / len(loader.dataset), total_loss / len(loader.dataset), cert_rad
 
-# Copied from train_save_smooth
-training_epsilon = 0.05  # Maximum perturbation
-epsilon = 0.1  # Maximum perturbation
-alpha = 0.01 # Step size
-num_iter = 40 # Number of iterations
-
 print("Begin training")
 t = time.time()
 # Train and save models if not already saved
@@ -171,7 +167,7 @@ if not os.path.exists("model_IDRS.pt"):
     t1 = time.time()
     for n in range(10):
         t0 = t1
-        err, loss, acr = epoch_params(model_dnn_4, model_mu_sig, train_loader, lam=0.3, L=10.0)
+        err, loss, acr = epoch_params(pretrained, model_mu_sig, train_loader, lam=0.01, L=10.0)
         t1 = time.time()
         print(f"Epoch {n+1}:\tTime: {(t1-t0)/60} minutes")
         print(f"Epoch {n+1}:\tAccuracy: {1-err}\tLoss: {loss}\tACR: {acr}")
