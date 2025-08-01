@@ -45,8 +45,8 @@ class ReLUBias(nn.Module):
         L = len(x[0])//2
         sigma_vals = x[:,L:]    # (100, 784) tensor
         sigma_vals = F.relu(sigma_vals) # ReLU
-        bias = self.lin1(sigma_vals)    # (100, 1) tensor
-        sigma_vals += bias              # Bias
+        #bias = self.lin1(sigma_vals)    # (100, 1) tensor
+        sigma_vals += 0.1              # Bias. Constant for now
         x[:,L:] = sigma_vals
         return x
 
@@ -86,6 +86,7 @@ model_dnn_4.load_state_dict(torch.load("model_dnn_4.pt", map_location=device, we
 def epoch_params(pretrained, model_params, loader, *args, lam=0.3, L=1.0,):
     '''Learns the sigma and mu neural nets.'''
     total_loss, total_err = 0.,0.
+    acr = []
 
     #Computing the Lipschitz constant for the pretrained model
     lip_g = 1.0
@@ -129,8 +130,8 @@ def epoch_params(pretrained, model_params, loader, *args, lam=0.3, L=1.0,):
                 spec_reg += spec_norm
         
         # Computing ACR/loss. Could combine into one line if we want.
-        acr = (sum(radii)/len(radii)).detach().cpu().item()
-        loss = -acr + lam * spec_reg
+        acr.append((sum(radii)/len(radii)).detach().cpu().item())
+        loss = -acr[-1] + lam * spec_reg
 
         num_linear_layers = sum(1 for layer in model_params if isinstance(layer, nn.Linear)) # Will want to make this the layers in the combined mu/sigma model
         L_const = L_max ** (1 / num_linear_layers) 
@@ -151,7 +152,8 @@ def epoch_params(pretrained, model_params, loader, *args, lam=0.3, L=1.0,):
         yp_tensor = torch.tensor(yp, device=y.device)
         total_err += (yp_tensor != y).sum().item()
         total_loss += loss.item() * X.shape[0]
-    return total_err / len(loader.dataset), total_loss / len(loader.dataset)
+    cert_rad = sum(acr)/len(acr)
+    return total_err / len(loader.dataset), total_loss / len(loader.dataset), cert_rad
 
 # Copied from train_save_smooth
 training_epsilon = 0.05  # Maximum perturbation
@@ -167,8 +169,9 @@ if not os.path.exists("model_IDRS.pt"):
     t1 = time.time()
     for n in range(10):
         t0 = t1
-        epoch_params(model_dnn_4, model_mu_sig, train_loader, training_epsilon, alpha, num_iter, lam=0.3, L=1.0)
+        err, loss, acr = epoch_params(model_dnn_4, model_mu_sig, train_loader, training_epsilon, alpha, num_iter, lam=0.3, L=1.0)
         t1 = time.time()
-        print(f"Epoch {n+1} time: {t1-t0}")
-    print(f"Total time: {t1-t}")
+        print(f"Epoch {n+1} time: {t1-t0} seconds, {(t1-t0)/60} minutes")
+        print(f"Accuracy: {1-err}\tLoss: {loss}\tACR: {acr}")
+    print(f"Total time: {(t1-t)/60} minutes, {(t1-t)/3600} hours")
     torch.save(model_mu_sig.state_dict(), "model_IDRS.pt")
