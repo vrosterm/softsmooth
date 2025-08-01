@@ -165,7 +165,7 @@ print("Begin training")
 t = time.time()
 # Train and save models if not already saved
 if not os.path.exists("model_IDRS.pt"):
-    opt = optim.SGD(model_dnn_4.parameters(), lr=0.1)
+    opt = optim.SGD(model_mu_sig.parameters(), lr=0.1)
     t1 = time.time()
     for n in range(10):
         t0 = t1
