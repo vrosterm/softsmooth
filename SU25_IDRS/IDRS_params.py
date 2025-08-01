@@ -117,15 +117,15 @@ def epoch_params(pretrained, model_params, loader, lam=0.01, L=10.0,):
         
         # Calling new randomized smoothing function. g is the top 2 items, yp is predicted labels.
         g, yp = IDRS_matrices(pretrained, mu, sigma_diag, X, n_samples=50)
-               
+        yp_tensor = torch.tensor(yp, device=y.device)
+
         # Computing certified radii for each image
         radii = torch.zeros((len(X)))
-        for n in range(len(X)):
-            # Only overwrite the 0 if the predicted class equals the actual class
-            if yp[n] == y[n]:
-                radii[n] = (g.values[n][0].item() - g.values[n][1].item()) / (2 * L_max)
+        radii = (g.values[:,0] - g.values[:,1]) / (2 * L_max)
+        radii = radii*(yp_tensor==y)
 
         spec_reg = 0.0
+        
         for layer in model_params:
             if isinstance(layer, nn.Linear):
                 spec_norm = torch.linalg.matrix_norm(layer.weight) #matrix_norm is more than 10x faster than SVD
@@ -152,10 +152,8 @@ def epoch_params(pretrained, model_params, loader, lam=0.01, L=10.0,):
                     norm_weight = L_const * weight / spec_norm
                     layer.weight.data.copy_(norm_weight)
         
-        yp_tensor = torch.tensor(yp, device=y.device)
         total_err += (yp_tensor != y).sum().item()
         total_loss += loss.item() * X.shape[0]
-
     cert_rad = sum(acr)/len(acr)
     return total_err / len(loader.dataset), total_loss / len(loader.dataset), cert_rad
 
@@ -167,7 +165,7 @@ if not os.path.exists("model_IDRS.pt"):
     t1 = time.time()
     for n in range(10):
         t0 = t1
-        err, loss, acr = epoch_params(pretrained, model_mu_sig, train_loader, lam=0.01, L=10.0)
+        err, loss, acr = epoch_params(pretrained, model_mu_sig, train_loader, lam=0.01, L=10000.0)
         t1 = time.time()
         print(f"Epoch {n+1}:\tTime: {(t1-t0)/60} minutes")
         print(f"Epoch {n+1}:\tAccuracy: {1-err}\tLoss: {loss}\tACR: {acr}")

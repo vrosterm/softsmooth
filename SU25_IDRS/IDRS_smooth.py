@@ -41,12 +41,12 @@ def IDRS_matrices(pretrained, mu, sigma, X, n_samples=50):
         current_img = X[n].expand(n_samples, -1, -1) # n_samples of each image (second dimension), (n_samples, 28, 28) shape
 
         scores[n] = pretrained(current_img+epsilon_torch)
-
-        yp.append(np.argmax(scores[n].detach().cpu().numpy()).item())
-
+        
     # Getting probabilities of each class, top 2 likely classes based on smoothing, and predicted image labels
     probs = torch.softmax(scores, dim=2)    # Softmax each set of scores
     avg_probs = probs.mean(dim=1)
+    for n in range(len(X)):
+        yp.append(np.argmax(avg_probs[n].detach().cpu().numpy()).item())
     g = torch.topk(avg_probs, 2)
 
     return g, yp
