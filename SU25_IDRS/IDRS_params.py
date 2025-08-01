@@ -83,7 +83,7 @@ model_dnn_4 = nn.Sequential(nn.Flatten(), nn.Linear(784,200), nn.ReLU(),
     nn.Linear(100,10)).to(device)
 model_dnn_4.load_state_dict(torch.load("model_dnn_4.pt", map_location=device, weights_only=True))
 
-def epoch_params(pretrained, model_params, loader, *args, lam=0.3, L=1.0,):
+def epoch_params(pretrained, model_params, loader, lam=0.3, L=1.0,):
     '''Learns the sigma and mu neural nets.'''
     total_loss, total_err = 0.,0.
     acr = []
@@ -114,7 +114,7 @@ def epoch_params(pretrained, model_params, loader, *args, lam=0.3, L=1.0,):
         sigma_diag = np.matmul(sigma_diag,sigma_diag)
         
         # Calling new randomized smoothing function. g is the top 2 items, yp is predicted labels.
-        g, yp = IDRS_matrices(pretrained, mu, sigma_diag, X, n_samples=10)
+        g, yp = IDRS_matrices(pretrained, mu, sigma_diag, X, n_samples=50)
                
         # Computing certified radii for each image
         radii = torch.zeros((len(X)))
@@ -129,8 +129,9 @@ def epoch_params(pretrained, model_params, loader, *args, lam=0.3, L=1.0,):
                 spec_norm = torch.linalg.matrix_norm(layer.weight) #matrix_norm is more than 10x faster than SVD
                 spec_reg += spec_norm
         
-        # Computing ACR/loss. Could combine into one line if we want.
+        # Computing ACR/loss.
         acr.append((sum(radii)/len(radii)).detach().cpu().item())
+        loss = torch.zeros(1)
         loss = -acr[-1] + lam * spec_reg
 
         num_linear_layers = sum(1 for layer in model_params if isinstance(layer, nn.Linear)) # Will want to make this the layers in the combined mu/sigma model
@@ -152,6 +153,7 @@ def epoch_params(pretrained, model_params, loader, *args, lam=0.3, L=1.0,):
         yp_tensor = torch.tensor(yp, device=y.device)
         total_err += (yp_tensor != y).sum().item()
         total_loss += loss.item() * X.shape[0]
+
     cert_rad = sum(acr)/len(acr)
     return total_err / len(loader.dataset), total_loss / len(loader.dataset), cert_rad
 
@@ -169,9 +171,9 @@ if not os.path.exists("model_IDRS.pt"):
     t1 = time.time()
     for n in range(10):
         t0 = t1
-        err, loss, acr = epoch_params(model_dnn_4, model_mu_sig, train_loader, training_epsilon, alpha, num_iter, lam=0.3, L=1.0)
+        err, loss, acr = epoch_params(model_dnn_4, model_mu_sig, train_loader, lam=0.3, L=10.0)
         t1 = time.time()
-        print(f"Epoch {n+1} time: {t1-t0} seconds, {(t1-t0)/60} minutes")
-        print(f"Accuracy: {1-err}\tLoss: {loss}\tACR: {acr}")
+        print(f"Epoch {n+1}:\tTime: {(t1-t0)/60} minutes")
+        print(f"Epoch {n+1}:\tAccuracy: {1-err}\tLoss: {loss}\tACR: {acr}")
     print(f"Total time: {(t1-t)/60} minutes, {(t1-t)/3600} hours")
     torch.save(model_mu_sig.state_dict(), "model_IDRS.pt")
