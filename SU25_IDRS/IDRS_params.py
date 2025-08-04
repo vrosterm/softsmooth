@@ -7,7 +7,7 @@ from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 import random
 import numpy as np
-from IDRS_smooth import IDRS_matrices
+from IDRS_smooth import IDRS_softmax, IDRS_raw
 import time
 
 t = time.time()
@@ -78,11 +78,11 @@ train_loader = DataLoader(mnist_train, batch_size=100, shuffle=True)
 test_loader = DataLoader(mnist_test, batch_size=100, shuffle=False)
 
 # Loading the pretrained model. Currently the  layer NN.
-pretrained = nn.Sequential(nn.Flatten(), nn.Linear(784,200), nn.ReLU(), 
-                            nn.Linear(200,100), nn.ReLU(),
-                            nn.Linear(100,100), nn.ReLU(),
-                            nn.Linear(100,10)).to(device)
-pretrained.load_state_dict(torch.load("softsmooth/SU25_BASECODE/models/dnn_4_l2_pgd_epsilon_1.pt", map_location=device, weights_only=True))
+pretrained = nn.Sequential(
+    nn.Flatten(), nn.Linear(784,200), nn.ReLU(), 
+    nn.Linear(200,10)
+).to(device)
+pretrained.load_state_dict(torch.load("softsmooth/SU25_BASECODE/models/dnn_2_l2_pgd_epsilon_1.pt", map_location=device, weights_only=True))
 
 def epoch_params(pretrained, model_params, loader, lam=0.01, L=10.0,):
     '''Learns the sigma and mu neural nets.'''
@@ -95,7 +95,8 @@ def epoch_params(pretrained, model_params, loader, lam=0.01, L=10.0,):
         if isinstance(layer, nn.Linear):
             weight_norm = torch.linalg.matrix_norm(layer.weight)
             lip_g *= weight_norm
-    print(f"lip_g: {lip_g}")
+    
+    print(lip_g)
 
     L_max = lip_g * (1 + ((L ** 2 + L ** 2)**(1/2))) # Lipschitz constant for the mu/sigma model
     for X,y in loader:
@@ -116,7 +117,7 @@ def epoch_params(pretrained, model_params, loader, lam=0.01, L=10.0,):
         sigma_diag = np.matmul(sigma_diag,sigma_diag)
         
         # Calling new randomized smoothing function. g is the top 2 items, yp is predicted labels.
-        g, yp = IDRS_matrices(pretrained, mu, sigma_diag, X, n_samples=50)
+        g, yp = IDRS_raw(pretrained, mu, sigma_diag, X, n_samples=50)
         yp_tensor = torch.tensor(yp, device=y.device)
 
         # Computing certified radii for each image
@@ -165,7 +166,7 @@ if not os.path.exists("model_IDRS.pt"):
     t1 = time.time()
     for n in range(10):
         t0 = t1
-        err, loss, acr = epoch_params(pretrained, model_mu_sig, train_loader, lam=0.01, L=10000.0)
+        err, loss, acr = epoch_params(pretrained, model_mu_sig, train_loader, lam=0.01, L=1.0)
         t1 = time.time()
         print(f"Epoch {n+1}:\tTime: {(t1-t0)/60} minutes")
         print(f"Epoch {n+1}:\tAccuracy: {1-err}\tLoss: {loss}\tACR: {acr}")
