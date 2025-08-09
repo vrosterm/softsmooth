@@ -45,9 +45,10 @@ def IDRS_softmax(pretrained, mu, sigma, X, n_samples=50):
     # Getting probabilities of each class, top 2 likely classes based on smoothing, and predicted image labels
     probs = torch.softmax(scores, dim=2)    # Softmax each set of scores
     avg_probs = probs.mean(dim=1)
+    beta = 1.0 # Temperature parameter for softmax
     for n in range(len(X)):
         yp.append(np.argmax(avg_probs[n].detach().cpu().numpy()).item())
-    g = torch.topk(avg_probs, 2)
+    g = beta * torch.topk(avg_probs, 2)
 
     return g, yp
 
