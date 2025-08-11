@@ -7,7 +7,7 @@ from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 import random
 import numpy as np
-from scipy.special import gamma, factorial
+from scipy.special import gamma, factorial, chi2
 from IDRS_smooth import IDRS_softmax, IDRS_raw
 import time
 
@@ -29,15 +29,18 @@ class Bias(nn.Module):
     def forward(self, x):
         return x.add(self.bias)
     
+min_sig_value = 0.1 # Minimum value for sigma
+p_min = 10**(-5) # Minimum probability threshold for certified radii
+    
 class ReLUBias(nn.Module):
     '''ReLU and Bias layer applied to only the second half of the neural net
     (the half with sigma)
     
     Learnable bias layer modified from https://discuss.pytorch.org/t/learnable-bias-layer/4221'''
-    
+
     def __init__(self) -> None:
         super().__init__()
-        self.sigma_min = nn.Parameter(torch.ones(1)*0.1)
+        self.sigma_min = nn.Parameter(torch.ones(1)*(min_sig_value))
         self.lin1 = nn.Linear(784,1)
     def forward(self, x):
         # In our current mu/sigma network, x is a FloatTensor of shape (100,1568).
@@ -78,9 +81,23 @@ pretrained = nn.Sequential(
 
 pretrained.load_state_dict(torch.load("softsmooth/SU25_BASECODE/models/dnn_2_l2_pgd_epsilon_1.pt", map_location=device, weights_only=True))
 
-def chi2_inv(x, dof):
-    return ((2**(-dof/2))/gamma(dof/2))*(x^(-dof/2-1))*np.exp(-1/(2*x))
+#Chi-square PDF
+def chi2_pdf(x, dof):
+    return chi2.pdf(x, df=dof)
 
+#Chi-square CDF
+def chi2_cdf(x, dof):
+    return chi2.cdf(x, df=dof)
+
+#Chi-squre CDF inverse
+def chi2_cdf_inv(p, dof):
+    return chi2.ppf(p, df=dof)
+
+#Derivative of phi wrt x (constant mu)
+def phi_derivative(x, mu):
+    return -x * torch.exp(-((x - mu) ** 2) / 2) / torch.sqrt(2 * np.pi)
+
+# Inverse of phi (constant mu)
 def phi_inv(x, mu):
     return mu + torch.sqrt(torch.tensor(2)) * torch.erfinv(2 * x - 1)
 
@@ -120,11 +137,15 @@ def epoch_params(pretrained, model_params, loader, lam=0.01, L=10.0, p_min = 10*
         yp_tensor = torch.tensor(yp, device=y.device)
 
         # Implementation of new math (section 4 in overleaf doc)
-        eps0 = chi2_inv(1-p_min,dof)
+        eps0 = chi2_cdf_inv(1-p_min,dof)
+
+        #Computing L_final using section 4 math
+        C = chi2_cdf_inv(1-p_min, 1) * chi2_pdf(chi2_cdf_inv(1-p_min, 1), 1) / phi_derivative(phi_inv(p_min, 0), 0)
+        L_final = 1 / min_sig_value + 2 * L * C / min_sig_value
 
         # Computing certified radii for each image
         radii = torch.zeros((len(X)))
-        radii = (g.values[:,0] - g.values[:,1]) / (2 * L_max)
+        radii = (phi_inv(g.values[:,0], 0) - phi_inv(g.values[:,1]), 0) / (2 * L_final)
         radii = radii*(yp_tensor==y)
 
         spec_reg = 0.0
