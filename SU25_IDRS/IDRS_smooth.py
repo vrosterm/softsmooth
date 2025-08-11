@@ -27,6 +27,7 @@ def IDRS_softmax(pretrained, mu, sigma, X, n_samples=50):
     rng = np.random.default_rng()
     scores = torch.zeros((len(X),n_samples,10)).to(device) # shape is (images in batch, n_samples, number of classes)
     yp = []
+    beta = 10.0 # Temperature parameter for softmax
 
     #Below loop works image by image
     for n in range(len(X)):
@@ -40,15 +41,14 @@ def IDRS_softmax(pretrained, mu, sigma, X, n_samples=50):
 
         current_img = X[n].expand(n_samples, -1, -1) # n_samples of each image (second dimension), (n_samples, 28, 28) shape
 
-        scores[n] = pretrained(current_img+epsilon_torch)
+        scores[n] = beta * pretrained(current_img+epsilon_torch)
         
     # Getting probabilities of each class, top 2 likely classes based on smoothing, and predicted image labels
     probs = torch.softmax(scores, dim=2)    # Softmax each set of scores
     avg_probs = probs.mean(dim=1)
-    beta = 1.0 # Temperature parameter for softmax
     for n in range(len(X)):
         yp.append(np.argmax(avg_probs[n].detach().cpu().numpy()).item())
-    g = beta * torch.topk(avg_probs, 2)
+    g = torch.topk(avg_probs, 2)
 
     return g, yp
 
