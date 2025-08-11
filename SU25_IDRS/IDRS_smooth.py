@@ -28,6 +28,7 @@ def IDRS_softmax(pretrained, mu, sigma, X, n_samples=50):
     scores = torch.zeros((len(X),n_samples,10)).to(device) # shape is (images in batch, n_samples, number of classes)
     yp = []
     beta = 10.0 # Temperature parameter for softmax
+    p_min = 10**(-5)
 
     #Below loop works image by image
     for n in range(len(X)):
@@ -46,6 +47,11 @@ def IDRS_softmax(pretrained, mu, sigma, X, n_samples=50):
     # Getting probabilities of each class, top 2 likely classes based on smoothing, and predicted image labels
     probs = torch.softmax(scores, dim=2)    # Softmax each set of scores
     avg_probs = probs.mean(dim=1)
+
+    min_prob = avg_probs.min().item() # Checks if minimum probabilty of all 10 classes is less than p_min
+    if min_prob < p_min:
+        print(f"Error: Minimum probability {min_prob} is less than p_min {p_min}.")
+    
     for n in range(len(X)):
         yp.append(np.argmax(avg_probs[n].detach().cpu().numpy()).item())
     g = torch.topk(avg_probs, 2)
