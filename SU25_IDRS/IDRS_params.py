@@ -10,8 +10,6 @@ import numpy as np
 from IDRS_smooth import IDRS_softmax, IDRS_raw
 import time
 
-t = time.time()
-
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 class Flatten(nn.Module):
@@ -38,7 +36,7 @@ class ReLUBias(nn.Module):
     
     def __init__(self) -> None:
         super().__init__()
-        self.bias = nn.Parameter(torch.ones(1)*0.1)
+        self.sigma_min = nn.Parameter(torch.ones(1)*0.1)
         self.lin1 = nn.Linear(784,1)
     def forward(self, x):
         # In our current mu/sigma network, x is a FloatTensor of shape (100,1568).
@@ -46,29 +44,23 @@ class ReLUBias(nn.Module):
         sigma_vals = x[:,L:]    # (100, 784) tensor
         sigma_vals = F.relu(sigma_vals) # ReLU
         #bias = self.lin1(sigma_vals)    # (100, 1) tensor
-        sigma_vals += 0.1              # Bias. Constant for now
+        sigma_vals += self.sigma_min              # Bias. Constant for now
         x[:,L:] = sigma_vals
         return x
 
 model_sigma = nn.Sequential(
-    Flatten(), nn.Linear(784,200), nn.ReLU(), 
-    nn.Linear(200,100), nn.ReLU(),
-    nn.Linear(100,100), nn.ReLU(),
-    nn.Linear(100,784), nn.ReLU(), Bias()
+    Flatten(), nn.Linear(784,200), nn.ReLU(),
+    nn.Linear(200,784), nn.ReLU(), Bias()
 ).to(device)
 
 model_mu = nn.Sequential(
-    Flatten(), nn.Linear(784,200), nn.ReLU(), 
-    nn.Linear(200,100), nn.ReLU(),
-    nn.Linear(100,100), nn.ReLU(),
-    nn.Linear(100,784)
+    Flatten(), nn.Linear(784,200), nn.ReLU(),
+    nn.Linear(200,784)
 ).to(device)
 
 model_mu_sig = nn.Sequential(
-    Flatten(), nn.Linear(784,200), nn.ReLU(), 
-    nn.Linear(200,100), nn.ReLU(),
-    nn.Linear(100,100), nn.ReLU(),
-    nn.Linear(100,1568), ReLUBias()
+    Flatten(), nn.Linear(784,200), nn.ReLU(),
+    nn.Linear(200,1568), ReLUBias()
 ).to(device)
 
 # Data
@@ -77,11 +69,12 @@ mnist_test = datasets.MNIST("../data", train=False, download=True, transform=tra
 train_loader = DataLoader(mnist_train, batch_size=100, shuffle=True)
 test_loader = DataLoader(mnist_test, batch_size=100, shuffle=False)
 
-# Loading the pretrained model. Currently the  layer NN.
+# Loading the pretrained model.
 pretrained = nn.Sequential(
     nn.Flatten(), nn.Linear(784,200), nn.ReLU(), 
     nn.Linear(200,10)
 ).to(device)
+
 pretrained.load_state_dict(torch.load("softsmooth/SU25_BASECODE/models/dnn_2_l2_pgd_epsilon_1.pt", map_location=device, weights_only=True))
 
 def epoch_params(pretrained, model_params, loader, lam=0.01, L=10.0,):
@@ -96,8 +89,6 @@ def epoch_params(pretrained, model_params, loader, lam=0.01, L=10.0,):
             weight_norm = torch.linalg.matrix_norm(layer.weight)
             lip_g *= weight_norm
     
-    print(lip_g)
-
     L_max = lip_g * (1 + ((L ** 2 + L ** 2)**(1/2))) # Lipschitz constant for the mu/sigma model
     for X,y in loader:
         # Getting initial X, y, output tensors
@@ -139,7 +130,7 @@ def epoch_params(pretrained, model_params, loader, lam=0.01, L=10.0,):
 
         num_linear_layers = sum(1 for layer in model_params if isinstance(layer, nn.Linear)) # Will want to make this the layers in the combined mu/sigma model
         L_const = L ** (1 / num_linear_layers) 
-        
+
         if opt:
             opt.zero_grad()
             loss.backward()
