@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader
 import numpy as np
 import time
 
-def IDRS_softmax(pretrained, mu, sigma, X, n_samples=50):
+def IDRS_softmax(pretrained, mu, sigma, X, n_samples=50, beta=10, p_min=10**(-5)):
     '''Takes mu and sigma matrices, generates random noise, and applies it to 
     the given images to create new predicted outputs.
     
@@ -27,8 +27,6 @@ def IDRS_softmax(pretrained, mu, sigma, X, n_samples=50):
     rng = np.random.default_rng()
     scores = torch.zeros((len(X),n_samples,10)).to(device) # shape is (images in batch, n_samples, number of classes)
     yp = []
-    beta = 10.0 # Temperature parameter for softmax
-    p_min = 10**(-5)
 
     #Below loop works image by image
     for n in range(len(X)):

@@ -7,7 +7,7 @@ from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 import random
 import numpy as np
-from scipy.special import gamma, factorial, chi2
+from scipy.stats import chi2
 from IDRS_smooth import IDRS_softmax, IDRS_raw
 import time
 
@@ -29,8 +29,7 @@ class Bias(nn.Module):
     def forward(self, x):
         return x.add(self.bias)
     
-min_sig_value = 0.1 # Minimum value for sigma
-p_min = 10**(-5) # Minimum probability threshold for certified radii
+min_sig_value = 0.1
     
 class ReLUBias(nn.Module):
     '''ReLU and Bias layer applied to only the second half of the neural net
@@ -95,13 +94,20 @@ def chi2_cdf_inv(p, dof):
 
 #Derivative of phi wrt x (constant mu)
 def phi_derivative(x, mu):
-    return -x * torch.exp(-((x - mu) ** 2) / 2) / torch.sqrt(2 * np.pi)
+    temp = torch.zeros(1)
+    temp[0] = 2 * np.pi
+    return -x * torch.exp(-((x - mu) ** 2) / 2) / torch.sqrt(temp)
 
 # Inverse of phi (constant mu)
 def phi_inv(x, mu):
-    return mu + torch.sqrt(torch.tensor(2)) * torch.erfinv(2 * x - 1)
+    if type(x) is float:
+        temp = torch.zeros(1)
+        temp[0] = 2 * x - 1
+    elif type(x) is torch.Tensor:
+        temp = 2 * x - 1
+    return mu + torch.sqrt(torch.tensor(2)) * torch.erfinv(temp)
 
-def epoch_params(pretrained, model_params, loader, lam=0.01, L=10.0, p_min = 10**(-5), dof = 1):
+def epoch_params(pretrained, model_params, loader, lam=0.01, L=10.0, beta=10, p_min=10**(-5), dof=1):
     '''Learns the combined sigma and mu neural net.'''
     total_loss, total_err = 0.,0.
     acr = []
@@ -133,19 +139,17 @@ def epoch_params(pretrained, model_params, loader, lam=0.01, L=10.0, p_min = 10*
         sigma_diag = np.matmul(sigma_diag,sigma_diag)
         
         # Calling new randomized smoothing function. g is the top 2 items, yp is predicted labels.
-        g, yp = IDRS_raw(pretrained, mu, sigma_diag, X, n_samples=50)
+        g, yp = IDRS_softmax(pretrained, mu, sigma_diag, X, n_samples=50, beta=beta, p_min=p_min)
         yp_tensor = torch.tensor(yp, device=y.device)
-
-        # Implementation of new math (section 4 in overleaf doc)
-        eps0 = chi2_cdf_inv(1-p_min,dof)
-
+        
         #Computing L_final using section 4 math
-        C = chi2_cdf_inv(1-p_min, 1) * chi2_pdf(chi2_cdf_inv(1-p_min, 1), 1) / phi_derivative(phi_inv(p_min, 0), 0)
-        L_final = 1 / min_sig_value + 2 * L * C / min_sig_value
+        sigma_min = model_params[-1].sigma_min.detach().cpu().item()
+        C = chi2_cdf_inv(1-p_min, dof) * chi2_pdf(chi2_cdf_inv(1-p_min, dof), 1) / phi_derivative(phi_inv(p_min, 0), 0)
+        L_final = (1 / sigma_min + 2 * L * C / sigma_min).to(device)
 
         # Computing certified radii for each image
         radii = torch.zeros((len(X)))
-        radii = (phi_inv(g.values[:,0], 0) - phi_inv(g.values[:,1]), 0) / (2 * L_final)
+        radii = (phi_inv(g.values[:,0], 0) - phi_inv(g.values[:,1], 0)) / (2 * L_final)
         radii = radii*(yp_tensor==y)
 
         spec_reg = 0.0
@@ -189,7 +193,7 @@ if not os.path.exists("model_IDRS.pt"):
     t1 = time.time()
     for n in range(10):
         t0 = t1
-        err, loss, acr = epoch_params(pretrained, model_mu_sig, train_loader, lam=0.01, L=1.0, p_min = 10**(-5), dof = 1)
+        err, loss, acr = epoch_params(pretrained, model_mu_sig, train_loader, lam=0.01, L=1.0, beta=10, p_min=10**(-5), dof=1)
         t1 = time.time()
         print(f"Epoch {n+1}:\tTime: {(t1-t0)/60} minutes")
         print(f"Epoch {n+1}:\tAccuracy: {1-err}\tLoss: {loss}\tACR: {acr}")
