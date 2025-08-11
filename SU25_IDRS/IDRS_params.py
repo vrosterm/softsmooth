@@ -7,6 +7,7 @@ from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 import random
 import numpy as np
+from scipy.special import gamma, factorial
 from IDRS_smooth import IDRS_softmax, IDRS_raw
 import time
 
@@ -77,8 +78,14 @@ pretrained = nn.Sequential(
 
 pretrained.load_state_dict(torch.load("softsmooth/SU25_BASECODE/models/dnn_2_l2_pgd_epsilon_1.pt", map_location=device, weights_only=True))
 
-def epoch_params(pretrained, model_params, loader, lam=0.01, L=10.0,):
-    '''Learns the sigma and mu neural nets.'''
+def chi2_inv(x, dof):
+    return ((2**(-dof/2))/gamma(dof/2))*(x^(-dof/2-1))*np.exp(-1/(2*x))
+
+def phi_inv(x, mu):
+    return mu + torch.sqrt(torch.tensor(2)) * torch.erfinv(2 * x - 1)
+
+def epoch_params(pretrained, model_params, loader, lam=0.01, L=10.0, p_min = 10**(-5), dof = 1):
+    '''Learns the combined sigma and mu neural net.'''
     total_loss, total_err = 0.,0.
     acr = []
 
@@ -90,6 +97,7 @@ def epoch_params(pretrained, model_params, loader, lam=0.01, L=10.0,):
             lip_g *= weight_norm
     
     L_max = lip_g * (1 + ((L ** 2 + L ** 2)**(1/2))) # Lipschitz constant for the mu/sigma model
+    
     for X,y in loader:
         # Getting initial X, y, output tensors
         X,y = X.to(device), y.to(device) # X is shape (100,1,28,28)- batch of images
@@ -110,6 +118,9 @@ def epoch_params(pretrained, model_params, loader, lam=0.01, L=10.0,):
         # Calling new randomized smoothing function. g is the top 2 items, yp is predicted labels.
         g, yp = IDRS_raw(pretrained, mu, sigma_diag, X, n_samples=50)
         yp_tensor = torch.tensor(yp, device=y.device)
+
+        # Implementation of new math (section 4 in overleaf doc)
+        eps0 = chi2_inv(1-p_min,dof)
 
         # Computing certified radii for each image
         radii = torch.zeros((len(X)))
@@ -157,7 +168,7 @@ if not os.path.exists("model_IDRS.pt"):
     t1 = time.time()
     for n in range(10):
         t0 = t1
-        err, loss, acr = epoch_params(pretrained, model_mu_sig, train_loader, lam=0.01, L=1.0)
+        err, loss, acr = epoch_params(pretrained, model_mu_sig, train_loader, lam=0.01, L=1.0, p_min = 10**(-5), dof = 1)
         t1 = time.time()
         print(f"Epoch {n+1}:\tTime: {(t1-t0)/60} minutes")
         print(f"Epoch {n+1}:\tAccuracy: {1-err}\tLoss: {loss}\tACR: {acr}")
