@@ -43,7 +43,7 @@ def IDRS_softmax(pretrained, mu, sigma, X, n_samples=50, beta=10, p_min=10**(-5)
 
         scores[n] = torch.softmax(beta * pretrained(current_img+epsilon_torch), dim = 1)
 
-        probs[n] = (1 - (10 * p_min)) * (probs[n]) + p_min
+        probs[n] = (1 - (10 * p_min)) * (scores[n]) + p_min
         
     # Getting probabilities of each class, top 2 likely classes based on smoothing, and predicted image labels
     avg_probs = probs.mean(dim=1)
