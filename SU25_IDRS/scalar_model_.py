@@ -101,10 +101,7 @@ def epoch_params(pretrained, model_params, loader, lam=0.01, L=10, beta=10, p_mi
         
         sigma = model_params(X)  # (batch_size, 1)
         sigma_vals = sigma.squeeze(-1) #(batch_size,)
-
-        # Creating identity matrix for diagonal covariance
         dim = 784
-        id_mat = torch.eye(dim, device=sigma.device)  # (784, 784)
 
         # Batch of sigmas for each image
         sigma_diag = sigma_vals.squeeze(-1)  # shape: (batch_size,)
