@@ -61,9 +61,9 @@ def epoch(loader, model, opt=None):
     return total_err / len(loader.dataset), total_loss / len(loader.dataset)
 
 # Training functions
-def epoch_adversarial(model, loader, attack, opt, *args):
+def epoch_adversarial(loader, model, attack, opt, *args):
     total_loss, total_err = 0., 0.
-    for X, y in loader:
+    for X, y in tqdm(loader, desc="Adversarial Training"):  # Add progress bar
         X, y = X.to(device), y.to(device)
         delta = attack(model, X, y, *args)
         yp = model(X + delta)
@@ -89,7 +89,7 @@ def pgd_linf(model, X, y, epsilon, alpha, num_iter):
         delta.grad.zero_()
     return delta.detach()
 
-# PGF L_2 Norm Attack
+# PGD L_2 Norm Attack
 def pgd_l2(model, X, y, epsilon=2.4, alpha=0.01, num_iter=20):
     delta = torch.zeros_like(X, requires_grad=True)
         
@@ -152,7 +152,8 @@ if __name__ == '__main__':
     # Train and save DNN2 if not already saved
     if not os.path.exists("model_dnn_2.pt"):
         for epoch in range(10):
-            train_err, train_loss = epoch_adversarial(model_dnn_2, train_loader, pgd_linf, opt_dnn2, training_epsilon, alpha, num_iter)
+            # Fix parameter order: loader first, then model
+            train_err, train_loss = epoch_adversarial(train_loader, model_dnn_2, pgd_linf, opt_dnn2, training_epsilon, alpha, num_iter)
             train_acc = 1 - train_err
             print(f"[DNN_2] Epoch {epoch+1}: Train Accuracy = {train_acc:.4f}, Train Loss = {train_loss:.4f}")
         torch.save(model_dnn_2.state_dict(), "model_dnn_2.pt")
@@ -160,7 +161,8 @@ if __name__ == '__main__':
     # Train and save DNN4 if not already saved
     if not os.path.exists("model_dnn_4.pt"):
         for epoch in range(10):
-            train_err, train_loss = epoch_adversarial(model_dnn_4, train_loader, pgd_linf, opt_dnn4, training_epsilon, alpha, num_iter)
+            # Fix parameter order: loader first, then model
+            train_err, train_loss = epoch_adversarial(train_loader, model_dnn_4, pgd_linf, opt_dnn4, training_epsilon, alpha, num_iter)
             train_acc = 1 - train_err
             print(f"[DNN_4] Epoch {epoch+1}: Train Accuracy = {train_acc:.4f}, Train Loss = {train_loss:.4f}")
         torch.save(model_dnn_4.state_dict(), "model_dnn_4.pt")
