@@ -32,6 +32,11 @@ LWRS_model = LWRS(sigma=1).to(device)  # h(x) model, sigma is the INPUT noise!
 LWRS_tilde_model = LWRS_tilde(sigma=0.1).to(device)  # h~(x) model
 opt_LWRS = optim.SGD(LWRS_model.parameters(), lr=0.1)
 
+dnn4 = DNN_4().to(device)
+
+dnn4_clean = DNN_4(noise_std=0).to(device)
+opt_dnn4_clean = optim.SGD(dnn4_clean.parameters(), lr=0.1)
+
 if __name__ == '__main__': 
     # Add argument parser
     parser = argparse.ArgumentParser(description='Train and evaluate LWRS models')

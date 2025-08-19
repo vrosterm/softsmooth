@@ -119,12 +119,22 @@ def evaluate_clean(model, loader):
     return 1 - total_err / len(loader.dataset)
 
 # Model evaluation under PGD attack
-def evaluate_under_attack(model, loader, epsilon, alpha, num_iter):
+def evaluate_under_linf(model, loader, epsilon, alpha, num_iter):
     model.eval()
     total_err = 0
     for X, y in loader:
         X, y = X.to(device), y.to(device)
         delta = pgd_linf(model, X, y, epsilon, alpha, num_iter)
+        yp = model(X + delta)
+        total_err += (yp.max(dim=1)[1] != y).sum().item()
+    return 1 - total_err / len(loader.dataset)
+
+def evaluate_under_l2(model, loader, epsilon, alpha, num_iter):
+    model.eval()
+    total_err = 0
+    for X, y in loader:
+        X, y = X.to(device), y.to(device)
+        delta = pgd_l2(model, X, y, epsilon, alpha, num_iter)
         yp = model(X + delta)
         total_err += (yp.max(dim=1)[1] != y).sum().item()
     return 1 - total_err / len(loader.dataset)
@@ -150,7 +160,7 @@ def smooth(X, y, model, sigma, n_samples=1000):
 
 if __name__ == '__main__':
     # Train and save DNN2 if not already saved
-    if not os.path.exists("model_dnn_2.pt"):
+    if not os.path.exists("SU25_BASECODE/models/model_dnn_2.pt"):
         for epoch in range(10):
             # Fix parameter order: loader first, then model
             train_err, train_loss = epoch_adversarial(train_loader, model_dnn_2, pgd_linf, opt_dnn2, training_epsilon, alpha, num_iter)
@@ -159,7 +169,7 @@ if __name__ == '__main__':
         torch.save(model_dnn_2.state_dict(), "model_dnn_2.pt")
 
     # Train and save DNN4 if not already saved
-    if not os.path.exists("model_dnn_4.pt"):
+    if not os.path.exists("SU25_BASECODE/models/model_dnn_4.pt"):
         for epoch in range(10):
             # Fix parameter order: loader first, then model
             train_err, train_loss = epoch_adversarial(train_loader, model_dnn_4, pgd_linf, opt_dnn4, training_epsilon, alpha, num_iter)
@@ -168,8 +178,8 @@ if __name__ == '__main__':
         torch.save(model_dnn_4.state_dict(), "model_dnn_4.pt")
 
     # Loading save states
-    model_dnn_2.load_state_dict(torch.load("model_dnn_2.pt", map_location=device, weights_only=True))
-    model_dnn_4.load_state_dict(torch.load("model_dnn_4.pt", map_location=device, weights_only=True))
+    model_dnn_2.load_state_dict(torch.load("SU25_BASECODE/models/model_dnn_2.pt", map_location=device, weights_only=True))
+    model_dnn_4.load_state_dict(torch.load("SU25_BASECODE/models/model_dnn_4.pt", map_location=device, weights_only=True))
 
     # Evaluating and printing results
     for model, name in [
@@ -177,6 +187,6 @@ if __name__ == '__main__':
         (model_dnn_4, "DNN_4")
     ]:
         clean_acc = evaluate_clean(model, test_loader)
-        adv_acc = evaluate_under_attack(model, test_loader, epsilon, alpha, num_iter)
+        adv_acc = evaluate_under_linf(model, test_loader, epsilon, alpha, num_iter)
         print(f"Accuracy of {name} on clean data: {clean_acc:.4f}")
         print(f"Accuracy of {name} under PGD attack: {adv_acc:.4f}")

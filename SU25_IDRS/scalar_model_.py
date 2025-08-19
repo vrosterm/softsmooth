@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 import random
 import numpy as np
 from scipy.stats import chi2
-from IDRS_smooth import IDRS_softmax, IDRS_raw
+from scalar_smooth import scalar_smoothing
 import time
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -29,41 +29,22 @@ class Bias(nn.Module):
     def forward(self, x):
         return x.add(self.bias)
     
-min_sig_value = 0.1
+min_sig_value = 0.5
     
 class ReLUBias(nn.Module):
-    '''ReLU and Bias layer applied to only the second half of the neural net
-    (the half with sigma)
-    
-    Learnable bias layer modified from https://discuss.pytorch.org/t/learnable-bias-layer/4221'''
-
-    def __init__(self) -> None:
+    def __init__(self, min_sig_value=0.5):
         super().__init__()
-        self.sigma_min = nn.Parameter(torch.ones(1)*(min_sig_value))
-        self.lin1 = nn.Linear(784,1)
+        self.bias = nn.Parameter(torch.zeros(1))  # Learnable scalar bias
+        self.min_sig_value = min_sig_value
+
     def forward(self, x):
-        # In our current mu/sigma network, x is a FloatTensor of shape (100,1568).
-        L = len(x[0])//2
-        sigma_vals = x[:,L:]    # (100, 784) tensor
-        sigma_vals = F.relu(sigma_vals) # ReLU
-        #bias = self.lin1(sigma_vals)    # (100, 1) tensor
-        sigma_vals += self.sigma_min              # Bias. Constant for now
-        x[:,L:] = sigma_vals
-        return x
-
-model_sigma = nn.Sequential(
-    Flatten(), nn.Linear(784,200), nn.ReLU(),
-    nn.Linear(200,784), nn.ReLU(), Bias()
-).to(device)
-
-model_mu = nn.Sequential(
-    Flatten(), nn.Linear(784,200), nn.ReLU(),
-    nn.Linear(200,784)
-).to(device)
+        x = F.relu(x + self.bias)               # Applying ReLU and bias
+        x = torch.clamp(x, min=self.min_sig_value)  # Enforce minimum
+        return x  #(batch_size, 1)
 
 model_mu_sig = nn.Sequential(
     Flatten(), nn.Linear(784,200), nn.ReLU(),
-    nn.Linear(200,1568), ReLUBias()
+    nn.Linear(200,1), ReLUBias()
 ).to(device)
 
 # Data
@@ -78,7 +59,7 @@ pretrained = nn.Sequential(
     nn.Linear(200,10)
 ).to(device)
 
-pretrained.load_state_dict(torch.load("softsmooth/SU25_BASECODE/models/dnn_2_l2_pgd_epsilon_1.pt", map_location=device, weights_only=True))
+pretrained.load_state_dict(torch.load("dnn_2_l2_pgd_epsilon_1.pt", map_location=device, weights_only=True))
 
 #Chi-square PDF
 def chi2_pdf(x, dof):
@@ -107,43 +88,30 @@ def phi_inv(x, mu):
         temp = 2 * x - 1
     return mu + torch.sqrt(torch.tensor(2)) * torch.erfinv(temp)
 
-def epoch_params(pretrained, model_params, loader, lam=0.01, L=10.0, beta=10, p_min=10**(-5), dof=1):
+def epoch_params(pretrained, model_params, loader, lam=0.01, L=10, beta=10, p_min=10**(-5), dof=784):
     '''Learns the combined sigma and mu neural net.'''
     total_loss, total_err = 0.,0.
     acr = []
-
-    #Computing the Lipschitz constant for the pretrained model
-    lip_g = 1.0
-    for layer in pretrained:
-        if isinstance(layer, nn.Linear):
-            weight_norm = torch.linalg.matrix_norm(layer.weight)
-            lip_g *= weight_norm
     
-    L_max = lip_g * (1 + ((L ** 2 + L ** 2)**(1/2))) # Lipschitz constant for the mu/sigma model
-    
-    for X,y in loader:
-        # Getting initial X, y, output tensors
-        X,y = X.to(device), y.to(device) # X is shape (100,1,28,28)- batch of images
+    for X, y in loader:
+        X, y = X.to(device), y.to(device)
+        
+        batch_size = X.shape[0]
+        mu = torch.zeros(batch_size, 784).to(device)  # Zero mean per image
+        
+        sigma = model_params(X)  # (batch_size, 1)
+        sigma_vals = sigma.squeeze(-1) #(batch_size,)
+        dim = 784
 
-        outputs = model_params(X)  # (100, 1568) tensor- X is (100,1,28,28)
-        
-        # Organizing mu from outputs. Means are the first 784 values.
-        mu = outputs[:,:(len(outputs[0])//2)] # (100, 784) tensor
-        mu = mu.detach().cpu().numpy()
-        
-        #Organizing sigma from outputs. Sigma is the second 784 values.
-        sigma = outputs[:,(len(outputs[0])//2):] # (100, 784) tensor
-        sigma_diag = np.zeros((len(sigma),len(sigma[0]),len(sigma[0])))
-        sigma_diag[np.arange(len(sigma))[:, None], np.arange(len(sigma[0])), np.arange(len(sigma[0]))] = sigma.detach().cpu().numpy()
-        # Squaring the given sigma^1/2 matrices
-        sigma_diag = np.matmul(sigma_diag,sigma_diag)
-        
-        # Calling new randomized smoothing function. g is the top 2 items, yp is predicted labels.
-        g, yp = IDRS_softmax(pretrained, mu, sigma_diag, X, n_samples=50, beta=beta, p_min=p_min)
+        # Batch of sigmas for each image
+        sigma_diag = sigma_vals.squeeze(-1)  # shape: (batch_size,)
+
+        # Pass to randomized smoothing
+        g, yp = scalar_smoothing(pretrained, sigma_diag, X, n_samples=50, beta=beta, p_min=p_min)
         yp_tensor = torch.tensor(yp, device=y.device)
         
         #Computing L_final using section 4 math
-        sigma_min = model_params[-1].sigma_min.detach().cpu().item()
+        sigma_min = model_params[-1].min_sig_value
         C = chi2_cdf_inv(1-p_min, dof) * chi2_pdf(chi2_cdf_inv(1-p_min, dof), 1) / phi_derivative(phi_inv(p_min, 0), 0)
         L_final = (1 / sigma_min + 2 * L * C / sigma_min).to(device)
 
@@ -193,7 +161,7 @@ if not os.path.exists("model_IDRS.pt"):
     t1 = time.time()
     for n in range(10):
         t0 = t1
-        err, loss, acr = epoch_params(pretrained, model_mu_sig, train_loader, lam=0.01, L=1.0, beta=10, p_min=10**(-5), dof=1)
+        err, loss, acr = epoch_params(pretrained, model_mu_sig, train_loader, lam=0.01, L=10, beta=10, p_min=10**(-5), dof=784)
         t1 = time.time()
         print(f"Epoch {n+1}:\tTime: {(t1-t0)/60} minutes")
         print(f"Epoch {n+1}:\tAccuracy: {1-err}\tLoss: {loss}\tACR: {acr}")
