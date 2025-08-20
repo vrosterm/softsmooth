@@ -1,43 +1,37 @@
-# We need to train h(x) ALONE, and then apply its weights and biases to h~(x)
-
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
 
-# Define ReGU activation function
-def regu(x, sigma=0.1):
-    
-    # Standard normal PDF: φ(z) = exp(-z²/2) / sqrt(2π)
-    phi = lambda z: torch.exp(-z**2 / 2) / math.sqrt(2 * math.pi)
-    
-    # Standard normal CDF: Φ(z) = (1 + erf(z/sqrt(2))) / 2
-    Phi = lambda z: (1 + torch.erf(z / math.sqrt(2))) / 2
-    
-    regu_output = (x * Phi(x / sigma) + 
-                   sigma * phi(x / sigma))
-    
-    return regu_output
-
-# Model h(x)
+# Model h(x) with layer-specific noise control
 class LWRS(nn.Module):
     def __init__(self, sigma=0.1, n_samples=20):
         super(LWRS, self).__init__()
         self.sigma = sigma
         self.n_samples = n_samples
         
-        # Layerwise structure
+        # Layerwise structure with matching dimensions: 784 -> 784 -> 784 -> 10
         self.flatten = nn.Flatten()
-        self.fc0 = nn.Linear(784, 200)  # First layer
-        self.fc1 = nn.Linear(200, 100)  # Second layer
-        self.fc2 = nn.Linear(100, 50)   # Hidden2 → Hidden3 (new intermediate layer)
-        self.fc3 = nn.Linear(50, 10)    # Hidden3 → Output (10 classes)
+        self.fc0 = nn.Linear(784, 784)  # Input layer: 784 -> 784
+        self.fc1 = nn.Linear(784, 784)  # Hidden layer 1: 784 -> 784
+        self.fc2 = nn.Linear(784, 784)  # Hidden layer 2: 784 -> 784
+        self.fc3 = nn.Linear(784, 10)   # Output layer: 784 -> 10
+        
+        # Noise control variables - which layers to apply noise to
+        self.z = [0, 0, 0]  # [z^(0), z^(1), z^(2)] - binary flags for noise at each layer
 
-    def add_noise(self, x):
-        if self.sigma > 0:
+    def set_noise_layers(self, z_list):
+        """Set which layers should have noise applied.
+        z_list: [z0, z1, z2] where 1 = apply noise, 0 = no noise
+        """
+        self.z = z_list
+
+    def add_noise(self, x, layer_idx):
+        """Add noise only if the corresponding z flag is set"""
+        if self.sigma > 0 and self.z[layer_idx] == 1:
             epsilon = self.sigma * torch.randn_like(x)
             return x + epsilon
+        return x
 
     def forward(self, x):
         batch_size = x.size(0)
@@ -48,52 +42,32 @@ class LWRS(nn.Module):
         # Flatten input
         x = self.flatten(x)
 
-        # Layer 1 (no noise)
+        # Layer 0: 784 -> 784
+        x = self.add_noise(x, 0)  # Apply noise if z^(0) = 1
         x = self.fc0(x)
         x = F.relu(x)
-
-        # Layer 2
-        x = self.add_noise(x)
+        
+        # Layer 1: 784 -> 784
+        x = self.add_noise(x, 1)  # Apply noise if z^(1) = 1
         x = self.fc1(x)
         x = F.relu(x)
-
-        # Layer 3
-        x = self.add_noise(x)
+        
+        # Layer 2: 784 -> 784
+        x = self.add_noise(x, 2)  # Apply noise if z^(2) = 1
         x = self.fc2(x)
         x = F.relu(x)
-
-        # Apply linear transformation ALONE
+        
+        # Output layer: 784 -> 10 (no activation, no noise)
         x = self.fc3(x)
 
         # Reshape to [batch_size, n_samples, num_classes]
         x = x.view(batch_size, self.n_samples, -1)
-        
+
         # Average logits
-        x = x.mean(dim=1) ## Only aggregate AFTER SOFTMAX!! Push changes to github to document progress. --------
-                        ## use "feedthrough" variables to apply the noise at specific layers ON THEIR OWN.
+        x = x.mean(dim=1)        # Then aggregate
         return x
 
-# Model h~(x)
-class LWRS_tilde(nn.Module):
-    def __init__(self, sigma=0.1, n_samples=20):
-        super(LWRS_tilde, self).__init__()
-        self.sigma = sigma
-        self.n_samples = n_samples
-        
-        # Layerwise structure
-        self.flatten = nn.Flatten()
-        self.fc0 = nn.Linear(784, 200)  # First layer (same as LWRS)
-        self.fc1 = nn.Linear(200, 100)  # Second layer (same as LWRS)
-        self.fc2 = nn.Linear(100, 50)   # Hidden2 → Hidden3 (same as LWRS)
-        self.fc3 = nn.Linear(50, 10)    # Hidden3 → Output (same as LWRS)
 
-    def add_noise(self, x):
-        if self.sigma > 0:
-            epsilon = self.sigma * torch.randn_like(x)
-            return x + epsilon
-        return x
-
-    
 '''
 model_cnn = nn.Sequential(nn.Conv2d(1, 32, 3, padding=1), nn.ReLU(),
                           nn.Conv2d(32, 32, 3, padding=1, stride=2), nn.ReLU(),

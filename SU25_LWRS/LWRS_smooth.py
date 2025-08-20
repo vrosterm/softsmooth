@@ -1,7 +1,16 @@
+
+''' ARGUMENT PARSERS FOR SMOOTHING
+
+parser.add_argument('--train', action='store_true', help='Force retraining of model even if saved model exists')
+parser.add_argument('--epochs', type=int, default=10, help='Number of training epochs (default: 10)')
+parser.add_argument('--sigma', type=float, default=1.0, help='Layerwise smoothing sigma (default: 1.0)')
+parser.add_argument('--samples', type=int, default=500, help='Number of samples for smoothing (default: 500)')
+
+'''
+
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -9,12 +18,77 @@ import os
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 import random
-import argparse  # Add this import
-from LWRS_model import LWRS, LWRS_tilde
+import argparse
+from LWRS_model import LWRS
 from tqdm import tqdm
-from SU25_BASECODE.train_save_smooth import epoch, epoch_adversarial, pgd_l2, evaluate_clean, evaluate_under_attack, phi_inverse, smooth
+from SU25_BASECODE.train_save_smooth import epoch, epoch_adversarial, pgd_l2, evaluate_clean, evaluate_l2, phi_inverse
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+def smooth(X, y, model, sigma, z_config, n_samples=1000):
+    """
+    Apply layerwise smoothing based on z_config.
+    z_config: [z0, z1, z2] where 1 = apply smoothing at that layer, 0 = no smoothing
+    """
+    # Set the model's noise configuration
+    model.set_noise_layers(z_config)
+    
+    # For layerwise smoothing, we don't add input noise - the model handles internal noise
+    scores = model(X.expand(n_samples, -1, -1, -1))
+    probs = torch.softmax(scores, dim=1)    
+    avg_probs = probs.mean(dim=0)           
+    label = torch.argmax(avg_probs)
+    
+    if label != y.item():
+        radius = 0.0
+        return label.item(), radius
+    
+    best_scores = torch.topk(avg_probs, 2)          
+    radius = sigma * (phi_inverse(torch.tensor(best_scores.values[0].item()), 0) - phi_inverse(torch.tensor(best_scores.values[1].item()), 0)) / 2
+    return label.item(), radius.item()
+
+def evaluate_layer_smoothing(model, test_loader, layer_name, sigma, z_config, n_samples=500):
+    """Evaluate a specific layer smoothing configuration"""
+    print(f"\n=== Evaluating {layer_name} ===")
+    
+    total_radius = 0
+    correct_smooth = 0
+    total_samples = 0
+    
+    # Go through test dataset -- ADD LIMIT IF THIS TAKES TOO LONG
+    max_samples = 1000 # Total sample size of 10,000, using 1000.
+    for batch_idx, (x_batch, y_batch) in enumerate(tqdm(test_loader, desc=f"Smoothing {layer_name}")):
+        for i in range(x_batch.size(0)):
+            if total_samples >= max_samples:
+                break
+                
+            x = x_batch[i].unsqueeze(0).to(device)
+            y = y_batch[i].to(device)
+            y_tensor = y.unsqueeze(0)
+            
+            # Apply layerwise smoothing with z_config
+            label, radius = smooth(x, y_tensor, model, sigma=sigma, z_config=z_config, n_samples=n_samples)
+            
+            total_samples += 1
+            if label == y.item():
+                correct_smooth += 1
+                total_radius += radius
+        
+        if total_samples >= max_samples:
+            break
+    
+    # Results
+    smooth_accuracy = 100 * correct_smooth / total_samples
+    avg_radius = total_radius / correct_smooth if correct_smooth > 0 else 0
+    
+    print(f"{layer_name} - Smooth Accuracy: {correct_smooth}/{total_samples} ({smooth_accuracy:.1f}%)")
+    if correct_smooth > 0:
+        print(f"{layer_name} - Average Certified Radius: {avg_radius:.4f}")
+        print(f"{layer_name} - Total Certified Samples: {correct_smooth}")
+    else:
+        print(f"{layer_name} - No correctly classified samples for radius calculation")
+    
+    return smooth_accuracy, avg_radius, correct_smooth
 
 # Data
 mnist_train = datasets.MNIST("../data", train=True, download=True, transform=transforms.ToTensor())
@@ -27,26 +101,27 @@ epsilon = 0.1  # 10% of pixel range
 alpha = 0.01
 num_iter = 40  # Number of iterations
 
-# Initialize models using correct class names
-LWRS_model = LWRS(sigma=1).to(device)  # h(x) model, sigma is the INPUT noise!
-LWRS_tilde_model = LWRS_tilde(sigma=0.1).to(device)  # h~(x) model
+# Initialize base LWRS model h(x)
+LWRS_model = LWRS(sigma=1, n_samples=20).to(device)  # sigma for internal layerwise noise
 opt_LWRS = optim.SGD(LWRS_model.parameters(), lr=0.1)
 
 if __name__ == '__main__': 
     # Add argument parser
-    parser = argparse.ArgumentParser(description='Train and evaluate LWRS models')
-    parser.add_argument('--train', action='store_true', help='Force retraining of models even if saved model exists')
+    parser = argparse.ArgumentParser(description='Train LWRS model and evaluate layerwise smoothing')
+    parser.add_argument('--train', action='store_true', help='Force retraining of model even if saved model exists')
     parser.add_argument('--epochs', type=int, default=10, help='Number of training epochs (default: 10)')
+    parser.add_argument('--sigma', type=float, default=1.0, help='Layerwise smoothing sigma (default: 1.0)')
+    parser.add_argument('--samples', type=int, default=500, help='Number of samples for smoothing (default: 500)')
     args = parser.parse_args()
     
     # Create models directory if it doesn't exist
     os.makedirs("models", exist_ok=True)
     
-    # Train LWRS (h(x)) model
-    print("=== Training LWRS (h(x)) Model ===")
+    # Train base LWRS (h(x)) model
+    print("=== Training Base LWRS h(x) Model ===")
     
-    # Check if we should train (either no saved model exists OR --train flag is used)
-    should_train = not os.path.exists("models/LWRS_model.pt") or args.train
+    # Check if we should train
+    should_train = not os.path.exists("models/LWRS_layerwise_model.pt") or args.train
     
     if should_train:
         if args.train:
@@ -54,76 +129,76 @@ if __name__ == '__main__':
         else:
             print("No saved model found. Training new model...")
             
+        # Set no internal noise for training (z = [0,0,0])
+        LWRS_model.set_noise_layers([0, 0, 0])
+        
         for epoch_num in range(args.epochs):
             print(f"Epoch {epoch_num+1}/{args.epochs}:")
-            # Fix: Add the missing attack function and parameters
-            train_err, train_loss = epoch_adversarial(train_loader, LWRS_model, pgd_l2, opt_LWRS, epsilon, alpha, 10)  # Use 10 iterations
-            test_err, test_loss = epoch(test_loader, LWRS_model, None)  
-            # Keep evaluation at 40 iterations for stronger attacks
+            train_err, train_loss = epoch_adversarial(train_loader, LWRS_model, pgd_l2, opt_LWRS, epsilon, alpha, 10)
+            test_err, test_loss = epoch(test_loader, LWRS_model, None)
             adv_err, adv_loss = epoch_adversarial(test_loader, LWRS_model, pgd_l2, None, epsilon, alpha, num_iter)
             print("| Train Accuracy:     {:.2f}%".format(100 - train_err * 100))
             print("| Test Accuracy:      {:.2f}%".format(100 - test_err * 100))
             print("| Adversarial Accuracy:  {:.2f}%".format(100 - adv_err * 100))
-        torch.save(LWRS_model.state_dict(), "models/LWRS_model.pt")
-        print("LWRS model saved.")
+        
+        torch.save(LWRS_model.state_dict(), "models/LWRS_layerwise_model.pt")
+        print("Base LWRS h(x) model saved.")
     else:
         # Load saved LWRS model
-        LWRS_model.load_state_dict(torch.load("models/LWRS_model.pt", map_location=device))
-        print("LWRS model loaded from saved file.")
+        LWRS_model.load_state_dict(torch.load("models/LWRS_layerwise_model.pt", map_location=device))
+        print("Base LWRS h(x) model loaded from saved file.")
 
-    # Transfer weights from LWRS to LWRS_tilde
-    print("\n=== Transferring weights from LWRS to LWRS_tilde ===")
-    LWRS_tilde_model.load_state_dict(LWRS_model.state_dict())
-    print("Weights transferred.")
-
-    # Evaluate both models
-    print("\n=== Evaluating Models ===")
-    
-    # Evaluate LWRS (h(x))
+    # Evaluate base model
+    print("\n=== Evaluating Base LWRS h(x) Model ===")
+    LWRS_model.set_noise_layers([0, 0, 0])  # No internal noise for evaluation
     clean_acc_h = evaluate_clean(LWRS_model, test_loader)
-    adv_acc_h = evaluate_under_attack(LWRS_model, test_loader, epsilon, alpha, num_iter)
-    print(f"LWRS (h(x)) - Clean Accuracy: {clean_acc_h:.4f}")
-    print(f"LWRS (h(x)) - Adversarial Accuracy: {adv_acc_h:.4f}")
+    adv_acc_h = evaluate_l2(LWRS_model, test_loader, epsilon, alpha, num_iter)
+    print(f"Base h(x) - Clean Accuracy: {clean_acc_h:.4f}")
+    print(f"Base h(x) - Adversarial Accuracy: {adv_acc_h:.4f}")
     
-    # Evaluate LWRS_tilde (h~(x))
-    clean_acc_h_tilde = evaluate_clean(LWRS_tilde_model, test_loader)
-    adv_acc_h_tilde = evaluate_under_attack(LWRS_tilde_model, test_loader, epsilon, alpha, num_iter)
-    print(f"LWRS_tilde (h~(x)) - Clean Accuracy: {clean_acc_h_tilde:.4f}")
-    print(f"LWRS_tilde (h~(x)) - Adversarial Accuracy: {adv_acc_h_tilde:.4f}")
-
-    # Smoothing evaluation
-    print("\n=== Randomized Smoothing Results ===")
+    # Evaluate the three layerwise smoothing configurations
+    print(f"\n=== Evaluating Layerwise Smoothing (σ = {args.sigma}) ===")
     
-    # Test smoothing on both models
-    for model_name, model in [("LWRS (h(x))", LWRS_model), ("LWRS_tilde (h~(x))", LWRS_tilde_model)]:
-        print(f"\n--- {model_name} Smoothing ---")
+    results = {}
+    
+    # Configuration 1: g_tail(z^(0)) - Smoothing at layer 0
+    results['layer_0'] = evaluate_layer_smoothing(
+        LWRS_model, test_loader, "g_tail(z^(0)) - Layer 0 Smoothing", 
+        sigma=args.sigma, z_config=[1, 0, 0], n_samples=args.samples
+    )
+    
+    # Configuration 2: g_tail(z^(1)) - Smoothing at layer 1
+    results['layer_1'] = evaluate_layer_smoothing(
+        LWRS_model, test_loader, "g_tail(z^(1)) - Layer 1 Smoothing", 
+        sigma=args.sigma, z_config=[0, 1, 0], n_samples=args.samples
+    )
+    
+    # Configuration 3: g_tail(z^(2)) - Smoothing at layer 2
+    results['layer_2'] = evaluate_layer_smoothing(
+        LWRS_model, test_loader, "g_tail(z^(2)) - Layer 2 Smoothing", 
+        sigma=args.sigma, z_config=[0, 0, 1], n_samples=args.samples
+    )
+    
+    # Summary comparison
+    print(f"\n=== Summary Comparison (σ = {args.sigma}) ===")
+    print("Configuration               | Smooth Acc | Avg Radius | Certified")
+    print("-" * 65)
+    
+    for config, (smooth_acc, avg_radius, certified) in results.items():
+        config_name = {
+            'layer_0': 'g_tail(z^(0)) - Layer 0',
+            'layer_1': 'g_tail(z^(1)) - Layer 1', 
+            'layer_2': 'g_tail(z^(2)) - Layer 2'
+        }[config]
         
-        # Test on entire test dataset
-        total_radius = 0
-        correct_smooth = 0
-        total_samples = 0
-        
-        # Go through entire test dataset
-        for batch_idx, (x_batch, y_batch) in enumerate(tqdm(test_loader, desc=f"Smoothing {model_name}")):
-            for i in range(x_batch.size(0)):  # Process each sample in the batch
-                x = x_batch[i].unsqueeze(0).to(device)
-                y = y_batch[i].to(device)
-                y_tensor = y.unsqueeze(0)
-                
-                # Get smoothed classifier prediction and radius
-                label, radius = smooth(x, y_tensor, model, sigma=1.0, n_samples=500)
-                
-                total_samples += 1
-                if label == y.item():
-                    correct_smooth += 1
-                    total_radius += radius
-                
-                # Print progress every 1000 samples
-                if total_samples % 1000 == 0:
-                    print(f"Processed {total_samples}/10000 samples...")
-        
-        print(f"{model_name} - Smooth Accuracy: {correct_smooth}/{total_samples} ({100*correct_smooth/total_samples:.1f}%)")
-        if correct_smooth > 0:
-            print(f"{model_name} - Average Certified Radius: {total_radius/correct_smooth:.4f}")
-        else:
-            print(f"{model_name} - No correctly classified samples for radius calculation")
+        print(f"{config_name:<26} | {smooth_acc:>9.1f}% | {avg_radius:>10.4f} | {certified:>9d}")
+    
+    # Find best configuration
+    best_config = max(results.keys(), key=lambda k: results[k][1])  # Best by avg radius
+    best_radius = results[best_config][1]
+    
+    print(f"\nBest Configuration: {best_config} with average radius {best_radius:.4f}")
+    
+    # Save results
+    torch.save(results, f"models/layerwise_smoothing_results_sigma_{args.sigma}.pt")
+    print(f"Results saved to models/layerwise_smoothing_results_sigma_{args.sigma}.pt")

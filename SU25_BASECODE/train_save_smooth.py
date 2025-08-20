@@ -8,6 +8,7 @@ import random
 import matplotlib.pyplot as pyplot
 from numpy import linspace
 from tqdm import tqdm
+import math
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -119,7 +120,7 @@ def evaluate_clean(model, loader):
     return 1 - total_err / len(loader.dataset)
 
 # Model evaluation under PGD attack
-def evaluate_under_linf(model, loader, epsilon, alpha, num_iter):
+def evaluate_linf(model, loader, epsilon, alpha, num_iter):
     model.eval()
     total_err = 0
     for X, y in loader:
@@ -129,7 +130,7 @@ def evaluate_under_linf(model, loader, epsilon, alpha, num_iter):
         total_err += (yp.max(dim=1)[1] != y).sum().item()
     return 1 - total_err / len(loader.dataset)
 
-def evaluate_under_l2(model, loader, epsilon, alpha, num_iter):
+def evaluate_l2(model, loader, epsilon, alpha, num_iter):
     model.eval()
     total_err = 0
     for X, y in loader:
@@ -187,6 +188,19 @@ if __name__ == '__main__':
         (model_dnn_4, "DNN_4")
     ]:
         clean_acc = evaluate_clean(model, test_loader)
-        adv_acc = evaluate_under_linf(model, test_loader, epsilon, alpha, num_iter)
+        adv_acc = evaluate_linf(model, test_loader, epsilon, alpha, num_iter)
         print(f"Accuracy of {name} on clean data: {clean_acc:.4f}")
         print(f"Accuracy of {name} under PGD attack: {adv_acc:.4f}")
+
+# Define ReGU activation function
+def regu(x, sigma=0.1):
+    # Standard normal PDF: φ(z) = exp(-z²/2) / sqrt(2π)
+    phi = lambda z: torch.exp(-z**2 / 2) / math.sqrt(2 * math.pi)
+    
+    # Standard normal CDF: Φ(z) = (1 + erf(z/sqrt(2))) / 2
+    Phi = lambda z: (1 + torch.erf(z / math.sqrt(2))) / 2
+    
+    regu_output = (x * Phi(x / sigma) + 
+                   sigma * phi(x / sigma))
+    
+    return regu_output
