@@ -28,13 +28,15 @@ class Bias(nn.Module):
         self.bias = nn.Parameter(torch.ones(1)*0.1)
     def forward(self, x):
         return x.add(self.bias)
-    
-min_sig_value = 0.5
+
+#Continue tuning hyperparameters at line 41 in the table roughly. 
+#Remake model to output vetor of 784 for just sigma and no mu
+#Make waterfall plots a .pgf file
     
 class ReLUBias(nn.Module):
-    def __init__(self, min_sig_value=0.5):
+    def __init__(self, min_sig_value=0.5, bias=0.5):
         super().__init__()
-        self.bias = nn.Parameter(torch.zeros(1))  # Learnable scalar bias
+        self.bias = bias
         self.min_sig_value = min_sig_value
 
     def forward(self, x):
@@ -88,7 +90,7 @@ def phi_inv(x, mu):
         temp = 2 * x - 1
     return mu + torch.sqrt(torch.tensor(2)) * torch.erfinv(temp)
 
-def epoch_params(pretrained, model_params, loader, lam=0.01, L=10, beta=10, p_min=10**(-5), dof=784):
+def epoch_params(pretrained, model_params, loader, lam=0.01, L=0.025, beta=100, p_min=10**(-7), dof=784):
     '''Learns the combined sigma and mu neural net.'''
     total_loss, total_err = 0.,0.
     acr = []
@@ -161,7 +163,7 @@ if not os.path.exists("model_IDRS.pt"):
     t1 = time.time()
     for n in range(10):
         t0 = t1
-        err, loss, acr = epoch_params(pretrained, model_mu_sig, train_loader, lam=0.01, L=10, beta=10, p_min=10**(-5), dof=784)
+        err, loss, acr = epoch_params(pretrained, model_mu_sig, train_loader, lam=0.01, L=0.025, beta=100, p_min=10**(-7), dof=784)
         t1 = time.time()
         print(f"Epoch {n+1}:\tTime: {(t1-t0)/60} minutes")
         print(f"Epoch {n+1}:\tAccuracy: {1-err}\tLoss: {loss}\tACR: {acr}")
