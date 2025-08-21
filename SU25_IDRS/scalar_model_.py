@@ -29,20 +29,16 @@ class Bias(nn.Module):
     def forward(self, x):
         return x.add(self.bias)
 
-#Continue tuning hyperparameters at line 41 in the table roughly. 
-#Remake model to output vetor of 784 for just sigma and no mu
-#Make waterfall plots a .pgf file
     
 class ReLUBias(nn.Module):
-    def __init__(self, min_sig_value=0.5, bias=0.5):
+    def __init__(self, min_sig_value=0.5):
         super().__init__()
-        self.bias = bias
+        self.bias = min_sig_value
         self.min_sig_value = min_sig_value
 
     def forward(self, x):
-        x = F.relu(x + self.bias)               # Applying ReLU and bias
-        x = torch.clamp(x, min=self.min_sig_value)  # Enforce minimum
-        return x  #(batch_size, 1)
+        x = F.relu(x) + self.bias   # Applying ReLU and bias
+        return x  #(Batch Size, 1)
 
 model_mu_sig = nn.Sequential(
     Flatten(), nn.Linear(784,200), nn.ReLU(),
@@ -90,7 +86,7 @@ def phi_inv(x, mu):
         temp = 2 * x - 1
     return mu + torch.sqrt(torch.tensor(2)) * torch.erfinv(temp)
 
-def epoch_params(pretrained, model_params, loader, lam=0.01, L=0.025, beta=100, p_min=10**(-7), dof=784):
+def epoch_params(pretrained, model_params, loader, lam=0.01, L=0.05, beta=100, p_min=10**(-7), dof=784):
     '''Learns the combined sigma and mu neural net.'''
     total_loss, total_err = 0.,0.
     acr = []
@@ -104,6 +100,7 @@ def epoch_params(pretrained, model_params, loader, lam=0.01, L=0.025, beta=100, 
         sigma = model_params(X)  # (batch_size, 1)
         sigma_vals = sigma.squeeze(-1) #(batch_size,)
         dim = 784
+        #print(sigma)
 
         # Batch of sigmas for each image
         sigma_diag = sigma_vals.squeeze(-1)  # shape: (batch_size,)
@@ -126,7 +123,7 @@ def epoch_params(pretrained, model_params, loader, lam=0.01, L=0.025, beta=100, 
         
         for layer in model_params:
             if isinstance(layer, nn.Linear):
-                spec_norm = torch.linalg.matrix_norm(layer.weight) #matrix_norm is more than 10x faster than SVD
+                spec_norm = torch.linalg.matrix_norm(layer.weight)
                 spec_reg += spec_norm
         
         # Computing ACR/loss.
@@ -134,7 +131,7 @@ def epoch_params(pretrained, model_params, loader, lam=0.01, L=0.025, beta=100, 
         loss = torch.zeros(1)
         loss = -acr[-1] + lam * spec_reg
 
-        num_linear_layers = sum(1 for layer in model_params if isinstance(layer, nn.Linear)) # Will want to make this the layers in the combined mu/sigma model
+        num_linear_layers = sum(1 for layer in model_params if isinstance(layer, nn.Linear)) 
         L_const = L ** (1 / num_linear_layers) 
 
         if opt:
@@ -163,7 +160,7 @@ if not os.path.exists("model_IDRS.pt"):
     t1 = time.time()
     for n in range(10):
         t0 = t1
-        err, loss, acr = epoch_params(pretrained, model_mu_sig, train_loader, lam=0.01, L=0.025, beta=100, p_min=10**(-7), dof=784)
+        err, loss, acr = epoch_params(pretrained, model_mu_sig, train_loader, lam=0.01, L=0.05, beta=100, p_min=10**(-7), dof=784)
         t1 = time.time()
         print(f"Epoch {n+1}:\tTime: {(t1-t0)/60} minutes")
         print(f"Epoch {n+1}:\tAccuracy: {1-err}\tLoss: {loss}\tACR: {acr}")
