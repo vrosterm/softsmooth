@@ -85,27 +85,24 @@ def smooth(X, y, model, sigma, n_samples=1000):
     radius = sigma * (phi_inv(torch.tensor(best_scores.values[0].item()), 0) - phi_inv(torch.tensor(best_scores.values[1].item()), 0)) / 2
     return label.item(), radius.item()
 
-def scalar_smoothing(pretrained, sigma, X, n_samples=50, beta=10, p_min=1e-5):
+def scalar_smoothing(pretrained, sigma, X, n_samples=50, beta=100, p_min=1e-7):
     device = X.device
     num_classes = 10
 
     scores = torch.zeros(n_samples, num_classes, device=device)
     probs = torch.zeros_like(scores)
-    yp = []
 
     epsilon = torch.randn(n_samples, 784, device=device) 
     epsilon = epsilon * torch.sqrt(sigma)  # Elementwise multipying by square root of diagonal elements
     epsilon = epsilon.view(n_samples, 1, 28, 28)
     current_img = X.expand(n_samples, -1, -1, -1)
-    
+
     scores = torch.softmax(beta * pretrained(current_img + epsilon), dim=1)
-    probs = (1 - 10 * p_min) * scores + p_min
+    probs = (1 - (10 * p_min)) * scores + p_min
+    avg_probs = probs.mean(dim=0)
 
-    avg_probs = probs.mean(dim=1)
-
-    yp.append(torch.argmax(avg_probs).item())
+    yp = torch.argmax(avg_probs).item()
     g = torch.topk(avg_probs, 2)
-    
     return g, yp
 
 def waterfall_sig_list(model,sigma=[0.25,0.5,1]):
@@ -153,15 +150,17 @@ def waterfall_sig_model(model,sigma_model):
 
         # Pass to randomized smoothing
         g, yp = scalar_smoothing(model, sigma_diag, x, n_samples=50, beta=beta, p_min=p_min)
-        yp_tensor = torch.tensor(yp, device=y.device)
         
         #Computing L_final using section 4 math
         sigma_min = sigma_model[-1].min_sig_value
         C = chi2_cdf_inv(1-p_min, dof) * chi2_pdf(chi2_cdf_inv(1-p_min, dof), 1) / phi_derivative(phi_inv(p_min, 0), 0)
         L_final = (1 / sigma_min + 2 * L * C / sigma_min).to(device)
         
-        if yp == y:
+        if yp == y.item():
             radii[i]  = (phi_inv(g.values[0], 0) - phi_inv(g.values[1], 0)) / (2 * L_final)
+
+            if i % 1000 == 0:
+                print:(f"{i} images complete")
 
     radius_domain = linspace(0,3,2000)
     wf_radii = [0 for n in range(len(radius_domain))]
