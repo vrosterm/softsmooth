@@ -26,10 +26,6 @@ def scalar_smoothing(pretrained, sigma, X, n_samples=50, beta=10, p_min=1e-5):
 
     avg_probs = probs.mean(dim=1)
 
-    min_prob = avg_probs.min().item()
-    if min_prob < p_min:
-        print(f"Error: Minimum probability {min_prob} is less than p_min {p_min}.")
-
     for n in range(batch_size):
         yp.append(torch.argmax(avg_probs[n]).item())
 
