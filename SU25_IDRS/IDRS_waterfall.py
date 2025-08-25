@@ -7,7 +7,6 @@ from matplotlib import pyplot
 import numpy as np
 from scipy.stats import chi2
 from numpy import linspace
-from scalar_smooth import scalar_smoothing
 import torch.nn.functional as F
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -43,7 +42,7 @@ model_smooth = nn.Sequential(
     nn.Linear(200,1), ReLUBias()
 ).to(device)
 
-model_smooth.load_state_dict(torch.load("softsmooth/SU25_BASECODE/models/sig_min0.65_ACR_1.197.pt"))
+model_smooth.load_state_dict(torch.load("nosqrtmodel.pt"))
 
 #Chi-square PDF
 def chi2_pdf(x, dof):
@@ -72,7 +71,7 @@ def phi_inv(x, mu):
         temp = 2 * x - 1
     return mu + torch.sqrt(torch.tensor(2)) * torch.erfinv(temp)
 
-def smooth(X, y, model, sigma, beta=100, n_samples=1000):
+def smooth(X, y, model, sigma, beta=1, n_samples=1000):
     X = X.expand(n_samples, -1, -1, -1)
     epsilon = sigma * torch.randn_like(X)
     scores = beta*model(X + epsilon) 
@@ -85,6 +84,26 @@ def smooth(X, y, model, sigma, beta=100, n_samples=1000):
     best_scores = torch.topk(avg_probs, 2)          
     radius = sigma * (phi_inv(torch.tensor(best_scores.values[0].item()), 0) - phi_inv(torch.tensor(best_scores.values[1].item()), 0)) / 2
     return label.item(), radius.item()
+
+def scalar_smoothing(pretrained, sigma, X, n_samples=50, beta=100, p_min=1e-7):
+    device = X.device
+    num_classes = 10
+
+    scores = torch.zeros(n_samples, num_classes, device=device)
+    probs = torch.zeros_like(scores)
+
+    epsilon = torch.randn(n_samples, 784, device=device) 
+    epsilon = epsilon * torch.sqrt(sigma)  # Elementwise multipying by square root of diagonal elements
+    epsilon = epsilon.view(n_samples, 1, 28, 28)
+    current_img = X.expand(n_samples, -1, -1, -1)
+
+    scores = torch.softmax(beta * pretrained(current_img + epsilon), dim=1)
+    probs = (1 - (10 * p_min)) * scores + p_min
+    avg_probs = probs.mean(dim=0)
+
+    yp = torch.argmax(avg_probs).item()
+    g = torch.topk(avg_probs, 2)
+    return g, yp
 
 def waterfall_sig_list(model,sigma=[0.25,0.5,1]):
     '''Returns data for a waterfall plot using a constant/scalar sigma value'''
@@ -99,7 +118,7 @@ def waterfall_sig_list(model,sigma=[0.25,0.5,1]):
             if labels[i][j] != y:
                 radii[i][j]=0
 
-    radius_domain = linspace(0,6,3000)
+    radius_domain = linspace(0,3,3000)
     wf_radii = [[0 for n in range(len(radius_domain))] for m in range(len(sigma))]
     for i in range(len(sigma)):
         for j in range(len(radius_domain)): # for every radius in the domain
@@ -112,14 +131,17 @@ def waterfall_sig_list(model,sigma=[0.25,0.5,1]):
 def waterfall_sig_model(model,sigma_model):
     '''Returns data for a waterfall plot using a model for sigma.'''
     labels=[0 for n in range(len(mnist_test))]
-    radii= []
+    radii= [0 for n in range(len(mnist_test))]
     p_min = 10**(-7)
-    beta = 100
+    beta = 1
     dof = 784
     L = 0.025
+    n_samp = 1000
 
-    for x, y in test_loader:
-        x, y = x.to(device), y.to(device)
+    for i in range(len(mnist_test)):
+        x, y = mnist_test[i]
+        x = x.unsqueeze(0).to(device) 
+        y = torch.tensor([y]).to(device)
                 
         sigma = sigma_model(x)  # (batch_size, 1)
         sigma_vals = sigma.squeeze(-1) #(batch_size,)
@@ -129,6 +151,7 @@ def waterfall_sig_model(model,sigma_model):
 
         # Pass to randomized smoothing
         g, yp = scalar_smoothing(model, sigma_diag, x, n_samples=50, beta=beta, p_min=p_min)
+        g, yp = scalar_smoothing(model, sigma_diag, x, n_samples=n_samp, beta=beta, p_min=p_min)
         yp_tensor = torch.tensor(yp, device=y.device)
         
         #Computing L_final using section 4 math
@@ -136,15 +159,17 @@ def waterfall_sig_model(model,sigma_model):
         C = chi2_cdf_inv(1-p_min, dof) * chi2_pdf(chi2_cdf_inv(1-p_min, dof), 1) / phi_derivative(phi_inv(p_min, 0), 0)
         L_final = (1 / sigma_min + 2 * L * C / sigma_min).to(device)
         
-        radiitemp = torch.zeros((len(x)))
-        radiitemp = (phi_inv(g.values[:,0], 0) - phi_inv(g.values[:,1], 0)) / (2 * L_final)
-        radiitemp = radiitemp*(yp_tensor==y)
+        if yp == y.item():
+            radii[i]  = (phi_inv(g.values[0], 0) - phi_inv(g.values[1], 0)) / (2 * L_final)
 
+            if i % 1000 == 0:
+                print:(f"{i} images complete")
         radiitemp = radiitemp.tolist()
+        #print(f"batch radii: {radiitemp}")
 
         radii.extend(radiitemp)
 
-    radius_domain = linspace(0,6,3000)
+    radius_domain = linspace(0,3,3000)
     wf_radii = [0 for n in range(len(radius_domain))]
     for i in range(len(radius_domain)):
         for j in range(len(radii)):
@@ -173,12 +198,15 @@ pyplot.rcParams.update({
 })
 
 fig = pyplot.figure()
+pyplot.plot(x_model,y_model,label = f"Scalar sigma_min = 0.5")
 pyplot.plot(x_model,y_model,label = "IDRS (Ours)",linewidth=2,linestyle="dashed")
 for i in range(len(sigma)):
-    pyplot.plot(x_const,y_const[i],label = f"Standard RS, $ \sigma = {sigma[i]}$",linewidth=2)
+    pyplot.plot(x_const,y_const[i],label = f"Constant sigma = {sigma[i]}")
+pyplot.xlabel("l2 Radius")
+pyplot.plot(x_const,y_const[i],label = f"Standard RS, $ \sigma = {sigma[i]}$",linewidth=2)
 pyplot.xlabel("$ \ell_{2}$-Radius")
 pyplot.ylabel("Certified Accuracy")
-pyplot.xlim(0,6)
+pyplot.xlim(0,3)
 pyplot.ylim(0,1)
 pyplot.title(f"MNIST Certified Accuracy Curves")
 pyplot.legend()
