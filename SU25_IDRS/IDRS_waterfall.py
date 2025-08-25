@@ -8,6 +8,7 @@ import numpy as np
 from scipy.stats import chi2
 from numpy import linspace
 import torch.nn.functional as F
+from scalar_smooth import scalar_smoothing
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -42,7 +43,7 @@ model_smooth = nn.Sequential(
     nn.Linear(200,1), ReLUBias()
 ).to(device)
 
-model_smooth.load_state_dict(torch.load("nosqrtmodel.pt"))
+model_smooth.load_state_dict(torch.load("nosqrt_sigmin_0.5_L_0.000001.pt"))
 
 #Chi-square PDF
 def chi2_pdf(x, dof):
@@ -85,26 +86,6 @@ def smooth(X, y, model, sigma, beta=1, n_samples=1000):
     radius = sigma * (phi_inv(torch.tensor(best_scores.values[0].item()), 0) - phi_inv(torch.tensor(best_scores.values[1].item()), 0)) / 2
     return label.item(), radius.item()
 
-def scalar_smoothing(pretrained, sigma, X, n_samples=50, beta=100, p_min=1e-7):
-    device = X.device
-    num_classes = 10
-
-    scores = torch.zeros(n_samples, num_classes, device=device)
-    probs = torch.zeros_like(scores)
-
-    epsilon = torch.randn(n_samples, 784, device=device) 
-    epsilon = epsilon * torch.sqrt(sigma)  # Elementwise multipying by square root of diagonal elements
-    epsilon = epsilon.view(n_samples, 1, 28, 28)
-    current_img = X.expand(n_samples, -1, -1, -1)
-
-    scores = torch.softmax(beta * pretrained(current_img + epsilon), dim=1)
-    probs = (1 - (10 * p_min)) * scores + p_min
-    avg_probs = probs.mean(dim=0)
-
-    yp = torch.argmax(avg_probs).item()
-    g = torch.topk(avg_probs, 2)
-    return g, yp
-
 def waterfall_sig_list(model,sigma=[0.25,0.5,1]):
     '''Returns data for a waterfall plot using a constant/scalar sigma value'''
     labels=[[0 for n in range(len(mnist_test))]for m in range(len(sigma))]
@@ -130,18 +111,15 @@ def waterfall_sig_list(model,sigma=[0.25,0.5,1]):
 
 def waterfall_sig_model(model,sigma_model):
     '''Returns data for a waterfall plot using a model for sigma.'''
-    labels=[0 for n in range(len(mnist_test))]
-    radii= [0 for n in range(len(mnist_test))]
+    radii= []
     p_min = 10**(-7)
     beta = 1
     dof = 784
     L = 0.025
     n_samp = 1000
 
-    for i in range(len(mnist_test)):
-        x, y = mnist_test[i]
-        x = x.unsqueeze(0).to(device) 
-        y = torch.tensor([y]).to(device)
+    for x, y in test_loader:
+        x, y = x.to(device), y.to(device)
                 
         sigma = sigma_model(x)  # (batch_size, 1)
         sigma_vals = sigma.squeeze(-1) #(batch_size,)
@@ -159,14 +137,11 @@ def waterfall_sig_model(model,sigma_model):
         C = chi2_cdf_inv(1-p_min, dof) * chi2_pdf(chi2_cdf_inv(1-p_min, dof), 1) / phi_derivative(phi_inv(p_min, 0), 0)
         L_final = (1 / sigma_min + 2 * L * C / sigma_min).to(device)
         
-        if yp == y.item():
-            radii[i]  = (phi_inv(g.values[0], 0) - phi_inv(g.values[1], 0)) / (2 * L_final)
+        radiitemp = torch.zeros((len(x)))
+        radiitemp = (phi_inv(g.values[:,0], 0) - phi_inv(g.values[:,1], 0)) / (2 * L_final)
+        radiitemp = radiitemp*(yp_tensor==y)
 
-            if i % 1000 == 0:
-                print:(f"{i} images complete")
         radiitemp = radiitemp.tolist()
-        #print(f"batch radii: {radiitemp}")
-
         radii.extend(radiitemp)
 
     radius_domain = linspace(0,3,3000)
@@ -198,12 +173,9 @@ pyplot.rcParams.update({
 })
 
 fig = pyplot.figure()
-pyplot.plot(x_model,y_model,label = f"Scalar sigma_min = 0.5")
 pyplot.plot(x_model,y_model,label = "IDRS (Ours)",linewidth=2,linestyle="dashed")
 for i in range(len(sigma)):
-    pyplot.plot(x_const,y_const[i],label = f"Constant sigma = {sigma[i]}")
-pyplot.xlabel("l2 Radius")
-pyplot.plot(x_const,y_const[i],label = f"Standard RS, $ \sigma = {sigma[i]}$",linewidth=2)
+    pyplot.plot(x_const,y_const[i],label = f"Standard RS, $ \sigma = {sigma[i]}$",linewidth=2)
 pyplot.xlabel("$ \ell_{2}$-Radius")
 pyplot.ylabel("Certified Accuracy")
 pyplot.xlim(0,3)
