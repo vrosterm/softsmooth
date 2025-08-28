@@ -7,8 +7,8 @@ from matplotlib import pyplot
 import numpy as np
 from scipy.stats import chi2
 from numpy import linspace
-import torch.nn.functional as F
 from scalar_smooth import scalar_smoothing
+import torch.nn.functional as F
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -43,7 +43,7 @@ model_smooth = nn.Sequential(
     nn.Linear(200,1), ReLUBias()
 ).to(device)
 
-model_smooth.load_state_dict(torch.load("nosqrt_sigmin_0.5_L_0.000001.pt"))
+model_smooth.load_state_dict(torch.load("sig_min0.65_beta1_ACR1.05.pt"))
 
 #Chi-square PDF
 def chi2_pdf(x, dof):
@@ -111,12 +111,12 @@ def waterfall_sig_list(model,sigma=[0.25,0.5,1]):
 
 def waterfall_sig_model(model,sigma_model):
     '''Returns data for a waterfall plot using a model for sigma.'''
+    labels=[0 for n in range(len(mnist_test))]
     radii= []
     p_min = 10**(-7)
     beta = 1
     dof = 784
-    L = 0.025
-    n_samp = 1000
+    L = 0.5
 
     for x, y in test_loader:
         x, y = x.to(device), y.to(device)
@@ -128,8 +128,7 @@ def waterfall_sig_model(model,sigma_model):
         sigma_diag = sigma_vals.squeeze(-1)  # shape: (batch_size,)
 
         # Pass to randomized smoothing
-        g, yp = scalar_smoothing(model, sigma_diag, x, n_samples=50, beta=beta, p_min=p_min)
-        g, yp = scalar_smoothing(model, sigma_diag, x, n_samples=n_samp, beta=beta, p_min=p_min)
+        g, yp = scalar_smoothing(model, sigma_diag, x, n_samples=1000, beta=beta, p_min=p_min)
         yp_tensor = torch.tensor(yp, device=y.device)
         
         #Computing L_final using section 4 math
@@ -142,6 +141,7 @@ def waterfall_sig_model(model,sigma_model):
         radiitemp = radiitemp*(yp_tensor==y)
 
         radiitemp = radiitemp.tolist()
+
         radii.extend(radiitemp)
 
     radius_domain = linspace(0,3,3000)
@@ -169,19 +169,20 @@ pyplot.rcParams.update({
 "font.size": "10",
 "axes.titlesize": "10",
 "xtick.labelsize": "10",
-"ytick.labelsize": "10"
+"ytick.labelsize": "10",
+"legend.fontsize": "9"
 })
 
 fig = pyplot.figure()
-pyplot.plot(x_model,y_model,label = "IDRS (Ours)",linewidth=2,linestyle="dashed")
 for i in range(len(sigma)):
     pyplot.plot(x_const,y_const[i],label = f"Standard RS, $ \sigma = {sigma[i]}$",linewidth=2)
+pyplot.plot(x_model,y_model,label = "IDRS (Ours)",linewidth=2,linestyle="dashed")
 pyplot.xlabel("$ \ell_{2}$-Radius")
 pyplot.ylabel("Certified Accuracy")
 pyplot.xlim(0,3)
 pyplot.ylim(0,1)
 pyplot.title(f"MNIST Certified Accuracy Curves")
 pyplot.legend()
-pyplot.show()
-fig.set_size_inches(4,3)
+fig.set_size_inches(3.5,2.5)
 pyplot.savefig("figure_name.pgf",bbox_inches="tight")
+pyplot.show()
