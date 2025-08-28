@@ -16,19 +16,6 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 class Flatten(nn.Module):
     def forward(self, x):
         return x.view(x.shape[0], -1)
-
-class Bias(nn.Module):
-    '''https://discuss.pytorch.org/t/bias-only-layer/167523
-    https://discuss.pytorch.org/t/learnable-bias-layer/4221
-    Currently just adds a constant bias. Linked above are potentially helpful
-    forum posts to make the bias learnable.'''
-    
-    def __init__(self) -> None:
-        super().__init__()
-        self.bias = nn.Parameter(torch.ones(1)*0.1)
-    def forward(self, x):
-        return x.add(self.bias)
-
     
 class ReLUBias(nn.Module):
     def __init__(self, min_sig_value=0.65):
@@ -67,11 +54,11 @@ def chi2_pdf(x, dof):
 def chi2_cdf(x, dof):
     return chi2.cdf(x, df=dof)
 
-#Chi-squre CDF inverse
+#Chi-square CDF inverse
 def chi2_cdf_inv(p, dof):
     return chi2.ppf(p, df=dof)
 
-#Derivative of phi wrt x (constant mu)
+#Derivative of Phi with respect to x (constant mu)
 def phi_derivative(x, mu):
     temp = torch.zeros(1)
     temp[0] = 2 * np.pi
@@ -95,21 +82,20 @@ def epoch_params(pretrained, model_params, loader, lam=0.01, L=0.5, beta=1, p_mi
         X, y = X.to(device), y.to(device)
         
         batch_size = X.shape[0]
-        mu = torch.zeros(batch_size, 784).to(device)  # Zero mean per image
+        mu = torch.zeros(batch_size, 784).to(device)
         
-        sigma = model_params(X)  # (batch_size, 1)
-        sigma_vals = sigma.squeeze(-1) #(batch_size,)
+        sigma = model_params(X)  # (Batch size, 1)
+        sigma_vals = sigma.squeeze(-1) #(Batch size,)
         dim = 784
-        #print(sigma)
 
         # Batch of sigmas for each image
-        sigma_diag = sigma_vals.squeeze(-1)  # shape: (batch_size,)
+        sigma_diag = sigma_vals.squeeze(-1)
 
         # Pass to randomized smoothing
         g, yp = scalar_smoothing(pretrained, sigma_diag, X, n_samples=1000, beta=beta, p_min=p_min)
         yp_tensor = torch.tensor(yp, device=y.device)
         
-        #Computing L_final using section 4 math
+        #Computing L_final
         sigma_min = model_params[-1].min_sig_value
         C = chi2_cdf_inv(1-p_min, dof) * chi2_pdf(chi2_cdf_inv(1-p_min, dof), 1) / phi_derivative(phi_inv(p_min, 0), 0)
         L_final = (1 / sigma_min + 2 * L * C / sigma_min).to(device)
@@ -139,7 +125,6 @@ def epoch_params(pretrained, model_params, loader, lam=0.01, L=0.5, beta=1, p_mi
             loss.backward()
             opt.step()
             
-            #New weight normalization step without parsing through parameter names
             for layer in model_params:
                 if isinstance(layer, nn.Linear):
                     weight = layer.weight.data
