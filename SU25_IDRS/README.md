@@ -8,8 +8,6 @@ This repository contains code for training a scalar model to predict per-image n
 
 "sig_min0.65_beta1_ACR1.05.pt" is the trained sigma model that was used to produce our final waterfall plot.
 
-"backups_unused" contains a vector model and a vector smoothing function that were used for testing purposes (training a vector sigma rather than a scalar).
-
 "train_save_smooth.py" trains a 2-layer model using an L_2 PGD attack and applies RS to the model.
 
 "dnn_2_l2_pgd_epsilon_1.pt" is our trained MNIST classifier with 2 fully-connected layers. "epsilon" is the strength of the attack during training.
