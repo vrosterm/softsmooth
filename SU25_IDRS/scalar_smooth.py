@@ -17,7 +17,7 @@ def scalar_smoothing(pretrained, sigma, X, n_samples=50, beta=10, p_min=1e-5):
 
     for n in range(batch_size): 
         epsilon = torch.randn(n_samples, 784, device=device) 
-        epsilon = epsilon * sigma[n]  # Elementwise multipying by square root of diagonal elements
+        epsilon = epsilon * sigma[n] 
         epsilon = epsilon.view(n_samples, 28, 28)
 
         current_img = X[n].expand(n_samples, -1, -1)
