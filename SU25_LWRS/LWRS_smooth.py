@@ -135,7 +135,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train LWRS model and evaluate layerwise smoothing')
     parser.add_argument('--train', action='store_true', help='Force retraining of model even if saved model exists')
     parser.add_argument('--epochs', type=int, default=10, help='Number of training epochs (default: 10)')
-    parser.add_argument('--sigma', type=float, default=[0.2, 0.1, 0.1], help='Layerwise smoothing sigma (default: [1, 0.1, 0.1])')
+    parser.add_argument('--sigma', type=float, default=[1, 0.1, 0.1], help='Layerwise smoothing sigma (default: [1, 0.1, 0.1])')
     parser.add_argument('--samples', type=int, default=500, help='Number of samples for smoothing (default: 500)')
     parser.add_argument('--sv', action='store_true', help='Calculates and saves Singular values')
     args = parser.parse_args()
