@@ -21,11 +21,12 @@ import random
 import argparse
 from LWRS_model import LWRS
 from tqdm import tqdm
+import math
 from SU25_BASECODE.train_save_smooth import epoch, epoch_adversarial, pgd_l2, evaluate_clean, evaluate_l2, phi_inverse
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-def smooth(X, y, model, sigma, z_config, n_samples=1000):
+def certify_radius(X, y, model, sigma, z_config):
     """
     Apply layerwise smoothing based on z_config.
     z_config: [z0, z1, z2] where 1 = apply smoothing at that layer, 0 = no smoothing
@@ -34,20 +35,44 @@ def smooth(X, y, model, sigma, z_config, n_samples=1000):
     model.set_noise_layers(z_config)
     
     # For layerwise smoothing, we don't add input noise - the model handles internal noise
-    scores = model(X.expand(n_samples, -1, -1, -1))
-    probs = torch.softmax(scores, dim=1)    
-    avg_probs = probs.mean(dim=0)           
-    label = torch.argmax(avg_probs)
+    scores = model(X)[0]
+    label = torch.argmax(scores)
     
     if label != y.item():
         radius = 0.0
         return label.item(), radius
     
-    best_scores = torch.topk(avg_probs, 2)          
-    radius = sigma * (phi_inverse(torch.tensor(best_scores.values[0].item()), 0) - phi_inverse(torch.tensor(best_scores.values[1].item()), 0)) / 2
+    best_scores = torch.topk(scores, 2)    
+    radius = sigma * (phi_inverse(best_scores.values[0], 0) - phi_inverse(best_scores.values[1], 0)) / 2
     return label.item(), radius.item()
 
-def evaluate_layer_smoothing(model, test_loader, layer_name, sigma, z_config, n_samples=500):
+def certify_layerwise_radius(X, y, model, sigma):
+    """
+    Apply layerwise smoothing based on z_config.
+    z_config: [z0, z1, z2] where 1 = apply smoothing at that layer, 0 = no smoothing
+    """
+    #Initializing list for all radii values
+    radii = []
+    sv = torch.load('models/sv_min.pt')
+
+    # Set the model's noise configuration
+    model.set_noise_layers([1,1,1])
+    
+    # For layerwise smoothing, we don't add input noise - the model handles internal noise
+    scores = model(X)[0]
+    label = torch.argmax(scores)
+    
+    if label != y.item():
+        radius = 0.0
+        return label.item(), radius
+    
+    best_scores = torch.topk(scores, 2)    
+    for i in range(len(sv)):
+        radius = sigma[-(1+i)] * (phi_inverse(best_scores.values[0], 0) - phi_inverse(best_scores.values[1], 0)) / 2
+        radii.append(radius * math.prod(sv[0:i+1]))
+    return label.item(), max(radii)
+
+def evaluate_layer_smoothing(model, test_loader, layer_name, sigma, z_config):
     """Evaluate a specific layer smoothing configuration"""
     print(f"\n=== Evaluating {layer_name} ===")
     
@@ -67,10 +92,14 @@ def evaluate_layer_smoothing(model, test_loader, layer_name, sigma, z_config, n_
             y_tensor = y.unsqueeze(0)
             
             # Apply layerwise smoothing with z_config
-            label, radius = smooth(x, y_tensor, model, sigma=sigma, z_config=z_config, n_samples=n_samples)
+            if z_config == [1,1,1]:
+                label, radius = certify_layerwise_radius(x, y_tensor, model, sigma)
+            elif z_config != [1,1,1]:
+                label, radius = certify_radius(x, y_tensor, model, sigma, z_config)
+
             
             total_samples += 1
-            if label == y.item():
+            if label == y.item() and not math.isinf(radius):
                 correct_smooth += 1
                 total_radius += radius
         
@@ -101,29 +130,28 @@ epsilon = 0.1  # 10% of pixel range
 alpha = 0.01
 num_iter = 40  # Number of iterations
 
-# Initialize base LWRS model h(x)
-LWRS_model = LWRS(sigma=1, n_samples=20).to(device)  # sigma for internal layerwise noise
-opt_LWRS = optim.SGD(LWRS_model.parameters(), lr=0.1)
-
 if __name__ == '__main__': 
     # Add argument parser
     parser = argparse.ArgumentParser(description='Train LWRS model and evaluate layerwise smoothing')
     parser.add_argument('--train', action='store_true', help='Force retraining of model even if saved model exists')
     parser.add_argument('--epochs', type=int, default=10, help='Number of training epochs (default: 10)')
-    parser.add_argument('--sigma', type=float, default=1.0, help='Layerwise smoothing sigma (default: 1.0)')
+    parser.add_argument('--sigma', type=float, default=[0.2, 0.1, 0.1], help='Layerwise smoothing sigma (default: [1, 0.1, 0.1])')
     parser.add_argument('--samples', type=int, default=500, help='Number of samples for smoothing (default: 500)')
+    parser.add_argument('--sv', action='store_true', help='Calculates and saves Singular values')
     args = parser.parse_args()
+
+    # Initialize base LWRS model h(x)
+    LWRS_model = LWRS(sigma=args.sigma, n_samples=args.samples).to(device)  # sigma for internal layerwise noise
+    opt_LWRS = optim.SGD(LWRS_model.parameters(), lr=0.1)
+    # Singular Values
     
     # Create models directory if it doesn't exist
     os.makedirs("models", exist_ok=True)
     
-    # Train base LWRS (h(x)) model
-    print("=== Training Base LWRS h(x) Model ===")
-    
     # Check if we should train
-    should_train = not os.path.exists("models/LWRS_layerwise_model.pt") or args.train
-    
-    if should_train:
+    if not os.path.exists("models/LWRS_layerwise_model.pt") or args.train:
+        # Train base LWRS (h(x)) model
+        print("=== Training Base LWRS h(x) Model ===")
         if args.train:
             print("--train flag detected. Retraining model...")
         else:
@@ -134,19 +162,32 @@ if __name__ == '__main__':
         
         for epoch_num in range(args.epochs):
             print(f"Epoch {epoch_num+1}/{args.epochs}:")
-            train_err, train_loss = epoch_adversarial(train_loader, LWRS_model, pgd_l2, opt_LWRS, epsilon, alpha, 10)
+            train_err, train_loss = epoch_adversarial(train_loader, LWRS_model, pgd_l2, opt_LWRS, epsilon, alpha)
             test_err, test_loss = epoch(test_loader, LWRS_model, None)
-            adv_err, adv_loss = epoch_adversarial(test_loader, LWRS_model, pgd_l2, None, epsilon, alpha, num_iter)
+            adv_err, adv_loss = epoch_adversarial(test_loader, LWRS_model, pgd_l2, None, epsilon, alpha)
             print("| Train Accuracy:     {:.2f}%".format(100 - train_err * 100))
             print("| Test Accuracy:      {:.2f}%".format(100 - test_err * 100))
             print("| Adversarial Accuracy:  {:.2f}%".format(100 - adv_err * 100))
         
         torch.save(LWRS_model.state_dict(), "models/LWRS_layerwise_model.pt")
         print("Base LWRS h(x) model saved.")
-    else:
-        # Load saved LWRS model
-        LWRS_model.load_state_dict(torch.load("models/LWRS_layerwise_model.pt", map_location=device))
-        print("Base LWRS h(x) model loaded from saved file.")
+
+        # Check if SVs need to be recalculated
+    if args.sv or not os.path.exists("models/sv_min.pt"):
+        sv_min = []
+        for name, layer in LWRS_model.named_modules():
+            if isinstance(layer, nn.Linear) and layer.weight.data.shape[0] == layer.weight.data.shape[1]:
+                W_inv = torch.linalg.inv(layer.weight.data)
+                # Compute singular values
+                S = torch.linalg.svdvals(W_inv)
+                sv_min.append(S[-1])
+        torch.save(sv_min, "models/sv_min.pt")
+        print("Singular values computed.")
+
+    # Load saved LWRS model 
+    LWRS_model.load_state_dict(torch.load("models/LWRS_layerwise_model.pt", map_location=device))
+    print("Base LWRS h(x) model loaded from saved file.")
+
 
     # Evaluate base model
     print("\n=== Evaluating Base LWRS h(x) Model ===")
@@ -163,21 +204,29 @@ if __name__ == '__main__':
     
     # Configuration 1: g_tail(z^(0)) - Smoothing at layer 0
     results['layer_0'] = evaluate_layer_smoothing(
-        LWRS_model, test_loader, "g_tail(z^(0)) - Layer 0 Smoothing", 
-        sigma=args.sigma, z_config=[1, 0, 0], n_samples=args.samples
+        LWRS_model, test_loader, f"g_tail(z^(0)) - Layer 0 Smoothing - {args.sigma[0]}", 
+        sigma=args.sigma[0], z_config=[1, 0, 0]
     )
     
     # Configuration 2: g_tail(z^(1)) - Smoothing at layer 1
     results['layer_1'] = evaluate_layer_smoothing(
-        LWRS_model, test_loader, "g_tail(z^(1)) - Layer 1 Smoothing", 
-        sigma=args.sigma, z_config=[0, 1, 0], n_samples=args.samples
+        LWRS_model, test_loader, f"g_tail(z^(1)) - Layer 1 Smoothing - {args.sigma[1]}", 
+        sigma=args.sigma[1], z_config=[0, 1, 0]
     )
     
     # Configuration 3: g_tail(z^(2)) - Smoothing at layer 2
     results['layer_2'] = evaluate_layer_smoothing(
-        LWRS_model, test_loader, "g_tail(z^(2)) - Layer 2 Smoothing", 
-        sigma=args.sigma, z_config=[0, 0, 1], n_samples=args.samples
+        LWRS_model, test_loader, f"g_tail(z^(2)) - Layer 2 Smoothing - {args.sigma[2]}", 
+        sigma=args.sigma[2], z_config=[0, 0, 1]
     )
+
+    # Configuration 3: g_tail(z^(2)) - Smoothing at layer 2
+    results['all_enabled'] = evaluate_layer_smoothing(
+        LWRS_model, test_loader, "All layers enabled", 
+        sigma=args.sigma, z_config=[1, 1, 1]
+    )
+
+
     
     # Summary comparison
     print(f"\n=== Summary Comparison (σ = {args.sigma}) ===")
@@ -188,7 +237,8 @@ if __name__ == '__main__':
         config_name = {
             'layer_0': 'g_tail(z^(0)) - Layer 0',
             'layer_1': 'g_tail(z^(1)) - Layer 1', 
-            'layer_2': 'g_tail(z^(2)) - Layer 2'
+            'layer_2': 'g_tail(z^(2)) - Layer 2',
+            'all_enabled': 'All layers enabled'
         }[config]
         
         print(f"{config_name:<26} | {smooth_acc:>9.1f}% | {avg_radius:>10.4f} | {certified:>9d}")

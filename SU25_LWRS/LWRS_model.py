@@ -5,11 +5,10 @@ import math
 
 # Model h(x) with layer-specific noise control
 class LWRS(nn.Module):
-    def __init__(self, sigma=0.1, n_samples=20):
+    def __init__(self, sigma, n_samples):
         super(LWRS, self).__init__()
         self.sigma = sigma
         self.n_samples = n_samples
-        
         # Layerwise structure with matching dimensions: 784 -> 784 -> 784 -> 10
         self.flatten = nn.Flatten()
         self.fc0 = nn.Linear(784, 784)  # Input layer: 784 -> 784
@@ -28,8 +27,8 @@ class LWRS(nn.Module):
 
     def add_noise(self, x, layer_idx):
         """Add noise only if the corresponding z flag is set"""
-        if self.sigma > 0 and self.z[layer_idx] == 1:
-            epsilon = self.sigma * torch.randn_like(x)
+        if self.sigma[layer_idx] > 0 and self.z[layer_idx] == 1:
+            epsilon = self.sigma[layer_idx] * torch.randn_like(x)
             return x + epsilon
         return x
 
@@ -65,6 +64,9 @@ class LWRS(nn.Module):
 
         # Average logits
         x = x.mean(dim=1)        # Then aggregate
+
+        # Apply Softmax to the samples 
+        x = torch.softmax(x,dim=1)
         return x
 
 
