@@ -31,7 +31,7 @@ class Bias(nn.Module):
 
     
 class ReLUBias(nn.Module):
-    def __init__(self, min_sig_value=0.5):
+    def __init__(self, min_sig_value=0.65):
         super().__init__()
         self.bias = min_sig_value
         self.min_sig_value = min_sig_value
@@ -86,7 +86,7 @@ def phi_inv(x, mu):
         temp = 2 * x - 1
     return mu + torch.sqrt(torch.tensor(2)) * torch.erfinv(temp)
 
-def epoch_params(pretrained, model_params, loader, lam=0.01, L=0.05, beta=100, p_min=10**(-7), dof=784):
+def epoch_params(pretrained, model_params, loader, lam=0.01, L=0.5, beta=1, p_min=10**(-7), dof=784):
     '''Learns the combined sigma and mu neural net.'''
     total_loss, total_err = 0.,0.
     acr = []
@@ -106,7 +106,7 @@ def epoch_params(pretrained, model_params, loader, lam=0.01, L=0.05, beta=100, p
         sigma_diag = sigma_vals.squeeze(-1)  # shape: (batch_size,)
 
         # Pass to randomized smoothing
-        g, yp = scalar_smoothing(pretrained, sigma_diag, X, n_samples=50, beta=beta, p_min=p_min)
+        g, yp = scalar_smoothing(pretrained, sigma_diag, X, n_samples=1000, beta=beta, p_min=p_min)
         yp_tensor = torch.tensor(yp, device=y.device)
         
         #Computing L_final using section 4 math
@@ -160,7 +160,7 @@ if not os.path.exists("model_IDRS.pt"):
     t1 = time.time()
     for n in range(10):
         t0 = t1
-        err, loss, acr = epoch_params(pretrained, model_mu_sig, train_loader, lam=0.01, L=0.000001, beta=1, p_min=10**(-7), dof=784)
+        err, loss, acr = epoch_params(pretrained, model_mu_sig, train_loader, lam=0.01, L=0.5, beta=1, p_min=10**(-7), dof=784)
         t1 = time.time()
         print(f"Epoch {n+1}:\tTime: {(t1-t0)/60} minutes")
         print(f"Epoch {n+1}:\tAccuracy: {1-err}\tLoss: {loss}\tACR: {acr}")
