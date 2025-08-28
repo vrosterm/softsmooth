@@ -57,7 +57,7 @@ pretrained = nn.Sequential(
     nn.Linear(200,10)
 ).to(device)
 
-pretrained.load_state_dict(torch.load("dnn_2_l2_pgd_epsilon_1.pt", map_location=device, weights_only=True))
+pretrained.load_state_dict(torch.load("softsmooth/SU25_BASECODE/models/dnn_2_l2_pgd_epsilon_1.pt", map_location=device, weights_only=True))
 
 #Chi-square PDF
 def chi2_pdf(x, dof):
@@ -160,7 +160,7 @@ if not os.path.exists("model_IDRS.pt"):
     t1 = time.time()
     for n in range(10):
         t0 = t1
-        err, loss, acr = epoch_params(pretrained, model_mu_sig, train_loader, lam=0.01, L=0.05, beta=100, p_min=10**(-7), dof=784)
+        err, loss, acr = epoch_params(pretrained, model_mu_sig, train_loader, lam=0.01, L=0.000001, beta=1, p_min=10**(-7), dof=784)
         t1 = time.time()
         print(f"Epoch {n+1}:\tTime: {(t1-t0)/60} minutes")
         print(f"Epoch {n+1}:\tAccuracy: {1-err}\tLoss: {loss}\tACR: {acr}")
