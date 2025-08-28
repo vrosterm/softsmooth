@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader
 import numpy as np
 import time
 
-def scalar_smoothing(pretrained, sigma, X, n_samples=50, beta=10, p_min=1e-5):
+def scalar_smoothing(pretrained, sigma, X, n_samples=1000, beta=10, p_min=10**(-7)):
     device = X.device
     batch_size = len(X)
     num_classes = 10
