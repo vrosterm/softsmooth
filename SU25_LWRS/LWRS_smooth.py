@@ -53,7 +53,7 @@ def certify_layerwise_radius(X, y, model, sigma):
     """
     #Initializing list for all radii values
     radii = []
-    sv = torch.load('models/sv_min.pt')
+    sv = torch.load('SU25_LWRS/models/sv_min.pt')
 
     # Set the model's noise configuration
     model.set_noise_layers([1,1,1])
@@ -119,6 +119,17 @@ def evaluate_layer_smoothing(model, test_loader, layer_name, sigma, z_config):
     
     return smooth_accuracy, avg_radius, correct_smooth
 
+def compute_sv(model):
+    sv_min = []
+    for name, layer in model.named_modules():
+        if isinstance(layer, nn.Linear) and layer.weight.data.shape[0] == layer.weight.data.shape[1]:
+            W_inv = torch.linalg.inv(layer.weight.data)
+            # Compute singular values
+            S = torch.linalg.svdvals(W_inv)
+            sv_min.append(S[-1])
+    torch.save(sv_min, "SU25_LWRS/models/sv_min.pt")
+    return sv_min
+
 # Data
 mnist_train = datasets.MNIST("../data", train=True, download=True, transform=transforms.ToTensor())
 mnist_test = datasets.MNIST("../data", train=False, download=True, transform=transforms.ToTensor())
@@ -135,8 +146,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train LWRS model and evaluate layerwise smoothing')
     parser.add_argument('--train', action='store_true', help='Force retraining of model even if saved model exists')
     parser.add_argument('--epochs', type=int, default=10, help='Number of training epochs (default: 10)')
-    parser.add_argument('--sigma', type=float, default=[1, 0.1, 0.1], help='Layerwise smoothing sigma (default: [1, 0.1, 0.1])')
-    parser.add_argument('--samples', type=int, default=500, help='Number of samples for smoothing (default: 500)')
+    parser.add_argument('--sigma', type=float, default=[0.5, 0.1, 0.1], help='Layerwise smoothing sigma (default: [1, 0.1, 0.1])')
+    parser.add_argument('--samples', type=int, default=10, help='Number of samples for smoothing (default: 500)')
     parser.add_argument('--sv', action='store_true', help='Calculates and saves Singular values')
     args = parser.parse_args()
 
@@ -146,10 +157,15 @@ if __name__ == '__main__':
     # Singular Values
     
     # Create models directory if it doesn't exist
-    os.makedirs("models", exist_ok=True)
+    os.makedirs("SU25_LWRS/models", exist_ok=True)
+
+    # Check if SVs need to be recalculated
+    if args.sv or not os.path.exists("SU25_LWRS/models/sv_min.pt"):
+        compute_sv(LWRS_model)
+        print("Singular values computed.")
     
     # Check if we should train
-    if not os.path.exists("models/LWRS_layerwise_model.pt") or args.train:
+    if not os.path.exists("SU25_LWRS/models/LWRS_layerwise_model.pt") or args.train:
         # Train base LWRS (h(x)) model
         print("=== Training Base LWRS h(x) Model ===")
         if args.train:
@@ -162,30 +178,20 @@ if __name__ == '__main__':
         
         for epoch_num in range(args.epochs):
             print(f"Epoch {epoch_num+1}/{args.epochs}:")
-            train_err, train_loss = epoch_adversarial(train_loader, LWRS_model, pgd_l2, opt_LWRS, epsilon, alpha)
-            test_err, test_loss = epoch(test_loader, LWRS_model, None)
-            adv_err, adv_loss = epoch_adversarial(test_loader, LWRS_model, pgd_l2, None, epsilon, alpha)
+            sv = compute_sv(LWRS_model)
+            train_err, train_loss = epoch_adversarial(train_loader, LWRS_model, pgd_l2, opt_LWRS, sv, epsilon, alpha)
+            print(compute_sv(LWRS_model))
+            test_err, test_loss = epoch(test_loader, LWRS_model, opt=None, sv=sv)
+            adv_err, adv_loss = epoch_adversarial(test_loader, LWRS_model, pgd_l2, None, sv, epsilon, alpha)
             print("| Train Accuracy:     {:.2f}%".format(100 - train_err * 100))
             print("| Test Accuracy:      {:.2f}%".format(100 - test_err * 100))
             print("| Adversarial Accuracy:  {:.2f}%".format(100 - adv_err * 100))
         
-        torch.save(LWRS_model.state_dict(), "models/LWRS_layerwise_model.pt")
+        torch.save(LWRS_model.state_dict(), "SU25_LWRS/models/LWRS_layerwise_model.pt")
         print("Base LWRS h(x) model saved.")
 
-        # Check if SVs need to be recalculated
-    if args.sv or not os.path.exists("models/sv_min.pt"):
-        sv_min = []
-        for name, layer in LWRS_model.named_modules():
-            if isinstance(layer, nn.Linear) and layer.weight.data.shape[0] == layer.weight.data.shape[1]:
-                W_inv = torch.linalg.inv(layer.weight.data)
-                # Compute singular values
-                S = torch.linalg.svdvals(W_inv)
-                sv_min.append(S[-1])
-        torch.save(sv_min, "models/sv_min.pt")
-        print("Singular values computed.")
-
     # Load saved LWRS model 
-    LWRS_model.load_state_dict(torch.load("models/LWRS_layerwise_model.pt", map_location=device))
+    LWRS_model.load_state_dict(torch.load("SU25_LWRS/models/LWRS_layerwise_model.pt", map_location=device))
     print("Base LWRS h(x) model loaded from saved file.")
 
 

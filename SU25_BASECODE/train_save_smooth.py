@@ -45,32 +45,36 @@ class Flatten(nn.Module):
     def forward(self, x):
         return x.view(x.shape[0], -1)
 
-def epoch(loader, model, opt=None):
+def epoch(loader, model, opt, sv):
     total_loss, total_err = 0., 0.
     for X, y in tqdm(loader, desc="Epoch Progress"):
+        sv_loss = 0
         X, y = X.to(device), y.to(device)
         yp = model(X)
-        loss = nn.CrossEntropyLoss()(yp, y)
-        if opt:
+        if sv is not None:
+                sv_loss = sum(sv)
+        loss = nn.CrossEntropyLoss()(yp, y) - sv_loss*0.15
+        if opt is not None:
             opt.zero_grad()
             loss.backward()
             opt.step()
-            yp = model(X)
-            loss = nn.CrossEntropyLoss()(yp, y)
+
         total_err += (yp.max(dim=1)[1] != y).sum().item()
         total_loss += loss.item() * X.shape[0]
     return total_err / len(loader.dataset), total_loss / len(loader.dataset)
 
 # Training functions
-def epoch_adversarial(loader, model, attack, opt, *args):
+def epoch_adversarial(loader, model, attack, opt, sv, *args):
     total_loss, total_err = 0., 0.
     for X, y in tqdm(loader, desc="Adversarial Training"):  # Add progress bar
+        sv_loss = 0
         X, y = X.to(device), y.to(device)
         delta = attack(model, X, y, *args)
         yp = model(X + delta)
-        loss = nn.CrossEntropyLoss()(yp, y)
-
-        if opt:
+        if sv != None:
+                sv_loss = sum(sv)
+        loss = nn.CrossEntropyLoss()(yp, y) - sv_loss*0.15
+        if opt is not None:
             opt.zero_grad()
             loss.backward()
             opt.step()
