@@ -43,7 +43,7 @@ model_smooth = nn.Sequential(
     nn.Linear(200,1), ReLUBias()
 ).to(device)
 
-model_smooth.load_state_dict(torch.load("sig_min0.65_beta1_ACR1.05.pt"))
+model_smooth.load_state_dict(torch.load("model_negativeIDRS.pt"))
 
 #Chi-square PDF
 def chi2_pdf(x, dof):
@@ -128,7 +128,7 @@ def waterfall_sig_model(model,sigma_model):
         sigma_diag = sigma_vals.squeeze(-1)  # shape: (batch_size,)
 
         # Pass to randomized smoothing
-        g, yp = scalar_smoothing(model, sigma_diag, x, n_samples=1000, beta=beta, p_min=p_min)
+        g, yp = scalar_smoothing(model, sigma_diag, x, n_samples=100, beta=beta, p_min=p_min)
         yp_tensor = torch.tensor(yp, device=y.device)
         
         #Computing L_final using section 4 math
@@ -156,7 +156,7 @@ def waterfall_sig_model(model,sigma_model):
 
 # Making and plotting graphs
 
-sigma = [0.25,0.5,1]
+sigma = [0.25,0.5,0.65,1]
 
 x_const, y_const = waterfall_sig_list(model_base,sigma=sigma)
 x_model, y_model = waterfall_sig_model(model_base,model_smooth)
