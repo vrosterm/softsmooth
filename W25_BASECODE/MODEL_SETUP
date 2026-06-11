@@ -1,0 +1,108 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torchvision import datasets, transforms
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+
+# Set device
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+torch.manual_seed(0)
+
+# Define SmeLU layer
+class SmeLU(nn.Module):
+    def __init__(self, beta=2.0):
+        super(SmeLU, self).__init__()
+        self.beta = beta
+
+    def forward(self, x):
+        return torch.where(
+            x <= -self.beta,  # x <= -beta
+            torch.zeros_like(x),
+            torch.where(
+                x <= self.beta,  # |x| <= beta
+                ((x + self.beta) ** 2) / (4 * self.beta),
+                x  # x >= beta
+            )
+        )
+
+# Load dataset
+def load_dataset(dataset_name, batch_size=100):
+    if dataset_name == "CIFAR10":
+        transform = transforms.Compose([transforms.ToTensor()])
+        train_data = datasets.CIFAR10("data", train=True, download=True, transform=transform)
+        test_data = datasets.CIFAR10("data", train=False, download=True, transform=transform)
+        input_channels = 3  # CIFAR-10 is RGB
+    elif dataset_name == "MNIST":
+        transform = transforms.Compose([transforms.ToTensor()])
+        train_data = datasets.MNIST("data", train=True, download=True, transform=transform)
+        test_data = datasets.MNIST("data", train=False, download=True, transform=transform)
+        input_channels = 1  # MNIST is grayscale
+    else:
+        raise ValueError(f"Dataset {dataset_name} is not supported.")
+    
+    train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True)
+    test_loader = DataLoader(test_data, batch_size=batch_size, shuffle=False)
+    return train_loader, test_loader, input_channels
+
+# Define the model
+def model_def(input_channels):
+    return nn.Sequential(
+        nn.Conv2d(input_channels, 32, 3, padding=1),
+        SmeLU(beta=1.0),  # ReLU -> SmeLU
+        nn.Conv2d(32, 32, 3, padding=1, stride=2),
+        SmeLU(beta=1.0),
+        nn.Conv2d(32, 64, 3, padding=1),
+        SmeLU(beta=1.0),
+        nn.Conv2d(64, 64, 3, padding=1, stride=2),
+        SmeLU(beta=1.0),
+        nn.Flatten(),
+        nn.Linear(8 * 8 * 64, 100),
+        SmeLU(beta=1.0),
+        nn.Linear(100, 10)
+    ).to(device)
+
+# Training and testing functions
+def epoch(loader, model, opt=None):
+    total_loss, total_err = 0., 0.
+    loop = tqdm(loader, desc="Batch Progress", leave=True)
+    for X, y in loop:
+        X, y = X.to(device), y.to(device)
+        yp = model(X)
+        loss = nn.CrossEntropyLoss()(yp, y)
+        if opt:
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+        total_err += (yp.max(dim=1)[1] != y).sum().item()
+        total_loss += loss.item() * X.shape[0]
+        loop.set_postfix(loss=f"{loss.item():.4f}", error=f"{total_err / len(loader.dataset):.4f}")
+    return total_err / len(loader.dataset), total_loss / len(loader.dataset)
+
+def main(dataset_name, epochs=10, batch_size=100, learning_rate=0.1):
+    # Load dataset
+    train_loader, test_loader, input_channels = load_dataset(dataset_name, batch_size)
+    
+    # Create model
+    model = model_def(input_channels)
+    
+    # Initialize optimizer and learning rate scheduler
+    opt = optim.SGD(model.parameters(), lr=learning_rate, weight_decay=1e-4)
+    scheduler = optim.lr_scheduler.StepLR(opt, step_size=5, gamma=0.1)
+    
+    # Train and test the model
+    for epoch_num in range(epochs):
+        print(f"Epoch {epoch_num+1} Training:")
+        train_err, train_loss = epoch(train_loader, model, opt)
+        print(f"Epoch {epoch_num+1} Testing:")
+        test_err, test_loss = epoch(test_loader, model)
+        scheduler.step()
+        print(f"Epoch {epoch_num+1}: Train Accuracy: {100 - 100*train_err:.2f}%, Test Accuracy: {100 - 100*test_err:.2f}%")
+    
+    # Save the trained model
+    torch.save(model.state_dict(), f"{dataset_name}_model.pt")
+    print(f"Model saved as {dataset_name}_model.pt")
+
+# Run the main function
+if __name__ == "__main__":
+    main(dataset_name="CIFAR10", epochs=10, batch_size=100, learning_rate=0.1)

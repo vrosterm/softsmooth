@@ -1,0 +1,70 @@
+import torch
+import numpy as np
+import warnings
+from tqdm import tqdm
+
+# Suppress the FutureWarning related to torch.load
+warnings.filterwarnings("ignore", category=FutureWarning, message=".*weights_only=False.*")
+
+# Load the robust and non-robust datasets
+print("Loading datasets...")
+robust_dataset = torch.load("robust_dataset.pt")
+non_robust_dataset = torch.load("non_robust_dataset.pt")
+print("Datasets loaded.")
+
+# Extract the data part from the robust and non-robust examples
+X_robust = robust_dataset.tensors[0]
+X_non_robust = non_robust_dataset.tensors[0]
+
+# Flatten the images
+X_robust = X_robust.view(X_robust.size(0), -1)
+X_non_robust = X_non_robust.view(X_non_robust.size(0), -1)
+
+# Print the dimensions of the datasets
+print(f"Size of robust dataset: {X_robust.size()}")
+print(f"Size of non-robust dataset: {X_non_robust.size()}")
+
+# Calculate the center point of the robust dataset
+center = torch.mean(X_robust, dim=0)
+
+# Adjust the vectors to be relative to the center point
+X_robust_rel = X_robust - center
+X_non_robust_rel = X_non_robust - center
+
+# Use the adjusted vectors for further calculations
+def euclidean_distance(x1, x2):
+    return torch.norm(x1 - x2, p=2)
+
+def bivector_area(v1, v2):
+    norm_v1 = torch.norm(v1)
+    norm_v2 = torch.norm(v2)
+    dot_product = torch.dot(v1, v2)
+    area = torch.sqrt(torch.pow(norm_v1 * norm_v2, 2) - torch.pow(dot_product, 2))
+    return area
+
+print("Finding the two nearest robust points for each non-robust data point...")
+nearest_robust_points = []
+distances = []
+quotients = []
+
+for x_non_robust in tqdm(X_non_robust_rel, desc="Processing non-robust points"):
+    # Calculate distance from the center
+    distance = euclidean_distance(x_non_robust, center)
+    distances.append(distance.item())
+    
+    # Find the two nearest robust points
+    nearest_indices = torch.topk(torch.tensor([euclidean_distance(x_non_robust, x_robust) for x_robust in X_robust_rel]), 2, largest=False).indices
+    nearest_points = X_robust_rel[nearest_indices]
+    nearest_robust_points.append(nearest_points)
+    
+    # Calculate the quotient
+    bivector_base = euclidean_distance(nearest_points[0], nearest_points[1])
+    quotient = bivector_area(nearest_points[0], nearest_points[1]) / bivector_base
+    quotients.append(quotient.item())
+
+distances_tensor = torch.tensor(distances)
+quotients_tensor = torch.tensor(quotients)
+
+# Print the first few distances and quotients to verify the results
+print("First few distances:", distances_tensor[:5])
+print("First few quotients:", quotients_tensor[:5])
