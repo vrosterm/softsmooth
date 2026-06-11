@@ -62,11 +62,12 @@ class LWRS(nn.Module):
         # Reshape to [batch_size, n_samples, num_classes]
         x = x.view(batch_size, self.n_samples, -1)
 
+        # Apply Softmax to the samples 
+        x = torch.softmax(x,dim=1)
+
         # Average logits
         x = x.mean(dim=1)        # Then aggregate
 
-        # Apply Softmax to the samples 
-        x = torch.softmax(x,dim=1)
         return x
 
 
