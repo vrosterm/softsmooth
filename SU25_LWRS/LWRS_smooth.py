@@ -26,6 +26,43 @@ from SU25_BASECODE.train_save_smooth import epoch, epoch_adversarial, pgd_l2, ev
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
+
+def _clamp_prob(p, eps=1e-6):
+    """Avoid phi_inverse instability when probabilities are exactly 0 or 1."""
+    return torch.clamp(p, min=eps, max=1 - eps)
+
+
+def _margin_from_scores(scores):
+    best_scores = torch.topk(scores, 2)
+    margin = best_scores.values[0] - best_scores.values[1]
+    return margin, best_scores
+
+
+def compute_lipschitz_standard_bounds(model):
+    """
+    Standard spectral-norm Lipschitz upper bounds.
+    L: product over all linear layers.
+    L_up_to_last: product over all but the final linear layer.
+    """
+    linear_layers = [m for m in model.modules() if isinstance(m, nn.Linear)]
+    if len(linear_layers) == 0:
+        return 1.0, 1.0
+
+    spectral_norms = []
+    for layer in linear_layers:
+        spec = torch.linalg.matrix_norm(layer.weight.data, ord=2)
+        spectral_norms.append(float(spec.item()))
+
+    L = 1.0
+    for sn in spectral_norms:
+        L *= sn
+
+    L_up_to_last = 1.0
+    for sn in spectral_norms[:-1]:
+        L_up_to_last *= sn
+
+    return L, L_up_to_last
+
 def certify_radius(X, y, model, sigma, z_config):
     """
     Apply layerwise smoothing based on z_config.
@@ -71,6 +108,49 @@ def certify_layerwise_radius(X, y, model, sigma):
         radius = sigma[-(1+i)] * (phi_inverse(best_scores.values[0], 0) - phi_inverse(best_scores.values[1], 0)) / 2
         radii.append(radius * math.prod(sv[0:i+1]))
     return label.item(), max(radii)
+
+
+def radius_standard(X, y, model, sigma, L=None, L_up_to_last=None):
+    """
+    Standard Lipschitz-certified radius for layer-wise averaging:
+      R_LWA_1 = margin / (2L)
+      R_LWA_2 = R_last_layer / (2L_up_to_last)
+      R_LWA   = max(R_LWA_1, R_LWA_2)
+    """
+    if not isinstance(sigma, (list, tuple)):
+        sigma = [sigma]
+
+    if L is None or L_up_to_last is None:
+        L, L_up_to_last = compute_lipschitz_standard_bounds(model)
+
+    # Base (deterministic) prediction and margin for R_LWA_1
+    model.set_noise_layers([0, 0, 0])
+    base_scores = model(X)[0]
+    base_label = torch.argmax(base_scores)
+
+    if base_label != y.item():
+        return base_label.item(), 0.0
+
+    margin, _ = _margin_from_scores(base_scores)
+    R_LWA_1 = float((margin / (2 * max(L, 1e-12))).item())
+
+    # Last-ReGU smoothing for R_last_layer, then map back using L_up_to_last
+    model.set_noise_layers([0, 0, 1])
+    smooth_scores_last = model(X)[0]
+    smooth_label_last = torch.argmax(smooth_scores_last)
+
+    if smooth_label_last != y.item():
+        R_LWA_2 = 0.0
+    else:
+        _, best_scores_last = _margin_from_scores(smooth_scores_last)
+        pA = _clamp_prob(best_scores_last.values[0])
+        pB = _clamp_prob(best_scores_last.values[1])
+        sigma_last = float(sigma[-1])
+        R_last_layer = sigma_last * (phi_inverse(pA, 0) - phi_inverse(pB, 0)) / 2
+        R_LWA_2 = float((R_last_layer / (2 * max(L_up_to_last, 1e-12))).item())
+
+    R_LWA = max(R_LWA_1, R_LWA_2)
+    return base_label.item(), R_LWA
 
 def evaluate_layer_smoothing(model, test_loader, layer_name, sigma, z_config):
     """Evaluate a specific layer smoothing configuration"""
@@ -119,6 +199,50 @@ def evaluate_layer_smoothing(model, test_loader, layer_name, sigma, z_config):
     
     return smooth_accuracy, avg_radius, correct_smooth
 
+
+def evaluate_standard_radius(model, test_loader, sigma):
+    """Evaluate standard Lipschitz-certified radius (radius_standard)."""
+    print("\n=== Evaluating Standard Lipschitz Radius ===")
+
+    total_radius = 0
+    correct_smooth = 0
+    total_samples = 0
+    max_samples = 1000
+
+    L, L_up_to_last = compute_lipschitz_standard_bounds(model)
+    print(f"Standard bounds: L={L:.6f}, L_up_to_last={L_up_to_last:.6f}")
+
+    for batch_idx, (x_batch, y_batch) in enumerate(tqdm(test_loader, desc="Standard radius")):
+        for i in range(x_batch.size(0)):
+            if total_samples >= max_samples:
+                break
+
+            x = x_batch[i].unsqueeze(0).to(device)
+            y = y_batch[i].to(device)
+            y_tensor = y.unsqueeze(0)
+
+            label, radius = radius_standard(x, y_tensor, model, sigma, L=L, L_up_to_last=L_up_to_last)
+
+            total_samples += 1
+            if label == y.item() and not math.isinf(radius):
+                correct_smooth += 1
+                total_radius += radius
+
+        if total_samples >= max_samples:
+            break
+
+    smooth_accuracy = 100 * correct_smooth / total_samples
+    avg_radius = total_radius / correct_smooth if correct_smooth > 0 else 0
+
+    print(f"Standard radius - Smooth Accuracy: {correct_smooth}/{total_samples} ({smooth_accuracy:.1f}%)")
+    if correct_smooth > 0:
+        print(f"Standard radius - Average Certified Radius: {avg_radius:.4f}")
+        print(f"Standard radius - Total Certified Samples: {correct_smooth}")
+    else:
+        print("Standard radius - No correctly classified samples for radius calculation")
+
+    return smooth_accuracy, avg_radius, correct_smooth
+
 def compute_sv(model):
     sv_min = []
     for name, layer in model.named_modules():
@@ -146,7 +270,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train LWRS model and evaluate layerwise smoothing')
     parser.add_argument('--train', action='store_true', help='Force retraining of model even if saved model exists')
     parser.add_argument('--epochs', type=int, default=10, help='Number of training epochs (default: 10)')
-    parser.add_argument('--sigma', type=float, default=[0.5, 0.1, 0.1], help='Layerwise smoothing sigma (default: [1, 0.1, 0.1])')
+    parser.add_argument('--sigma', nargs=3, type=float, default=[0.5, 0.1, 0.1], help='Layerwise smoothing sigma as three values [sigma0 sigma1 sigma2] (default: [0.5, 0.1, 0.1])')
     parser.add_argument('--samples', type=int, default=10, help='Number of samples for smoothing (default: 500)')
     parser.add_argument('--sv', action='store_true', help='Calculates and saves Singular values')
     args = parser.parse_args()
@@ -232,6 +356,11 @@ if __name__ == '__main__':
         sigma=args.sigma, z_config=[1, 1, 1]
     )
 
+    # Standard Lipschitz-based certified radius (requested test formula)
+    results['radius_standard'] = evaluate_standard_radius(
+        LWRS_model, test_loader, sigma=args.sigma
+    )
+
 
     
     # Summary comparison
@@ -244,7 +373,8 @@ if __name__ == '__main__':
             'layer_0': 'g_tail(z^(0)) - Layer 0',
             'layer_1': 'g_tail(z^(1)) - Layer 1', 
             'layer_2': 'g_tail(z^(2)) - Layer 2',
-            'all_enabled': 'All layers enabled'
+            'all_enabled': 'All layers enabled',
+            'radius_standard': 'Standard Lipschitz radius'
         }[config]
         
         print(f"{config_name:<26} | {smooth_acc:>9.1f}% | {avg_radius:>10.4f} | {certified:>9d}")
