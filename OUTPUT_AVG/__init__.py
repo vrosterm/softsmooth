@@ -1,0 +1,1 @@
+"""Output-averaging reference implementation."""
