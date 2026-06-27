@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-def _as_sigma_list(sigma, n_layers=3):
+def _as_sigma_list(sigma, n_layers=2):
     if isinstance(sigma, torch.Tensor):
         sigma = sigma.detach().cpu().tolist()
     if isinstance(sigma, (int, float)):
@@ -19,16 +19,16 @@ def _as_sigma_list(sigma, n_layers=3):
 
 
 class LWRS(nn.Module):
-    """LWA model using analytic ReGU hidden activations."""
+    """LWA model using two analytic ReGU hidden activations."""
 
-    def __init__(self, sigma=(0.5, 0.1, 0.1), n_samples=1000):
+    def __init__(self, sigma=(5.0, 5.0), n_samples=1000, hidden_dim=256):
         super().__init__()
         self.n_samples = n_samples
+        self.hidden_dim = int(hidden_dim)
         self.flatten = nn.Flatten()
-        self.fc0 = nn.Linear(784, 784)
-        self.fc1 = nn.Linear(784, 784)
-        self.fc2 = nn.Linear(784, 784)
-        self.fc3 = nn.Linear(784, 10)
+        self.fc0 = nn.Linear(784, self.hidden_dim)
+        self.fc1 = nn.Linear(self.hidden_dim, self.hidden_dim)
+        self.fc2 = nn.Linear(self.hidden_dim, 10)
         self.set_sigma(sigma)
 
     def set_sigma(self, sigma):
@@ -53,10 +53,13 @@ class LWRS(nn.Module):
         ]
 
     def linear_layers(self):
-        return [self.fc0, self.fc1, self.fc2, self.fc3]
+        return [self.fc0, self.fc1, self.fc2]
 
     def regu_layers(self):
-        return [self.fc0, self.fc1, self.fc2]
+        return [self.fc0, self.fc1]
+
+    def output_layer(self):
+        return self.fc2
 
     @staticmethod
     def _normal_cdf(x):
@@ -88,10 +91,9 @@ class LWRS(nn.Module):
     def features_to_last_regu_input(self, x):
         x = self.flatten(x)
         x = self._regu_activation(x, self.fc0, 0)
-        x = self._regu_activation(x, self.fc1, 1)
         return x
 
     def forward(self, x):
         x = self.features_to_last_regu_input(x)
-        x = self._regu_activation(x, self.fc2, 2)
-        return self.fc3(x)
+        x = self._regu_activation(x, self.fc1, 1)
+        return self.fc2(x)

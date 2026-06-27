@@ -4,7 +4,7 @@ from contextlib import contextmanager
 import torch
 
 
-def _as_sigma_list(sigma, n_layers=3):
+def _as_sigma_list(sigma, n_layers=2):
     if isinstance(sigma, torch.Tensor):
         sigma = sigma.detach().cpu().tolist()
     if isinstance(sigma, (int, float)):
@@ -57,17 +57,23 @@ def _induced_matrix_norm(matrix, p):
 def _linear_layers(model):
     if hasattr(model, "linear_layers"):
         return model.linear_layers()
+    if not hasattr(model, "fc3"):
+        return [model.fc0, model.fc1, model.fc2]
     return [model.fc0, model.fc1, model.fc2, model.fc3]
 
 
 def _regu_layers(model):
     if hasattr(model, "regu_layers"):
         return model.regu_layers()
+    if not hasattr(model, "fc3"):
+        return [model.fc0, model.fc1]
     return [model.fc0, model.fc1, model.fc2]
 
 
 def _output_layer(model):
-    return model.fc3
+    if hasattr(model, "output_layer"):
+        return model.output_layer()
+    return model.fc3 if hasattr(model, "fc3") else model.fc2
 
 
 def _row_noise_std(layer, sigma_l):
@@ -130,7 +136,9 @@ def compute_lipschitz_bound(model, p=2, bound_type="k_p", layers=None):
     Compute Lipschitz upper bounds with induced matrix norms.
 
     K_p = product_l ||W_l||_p.
-    K_abs = ||abs(W_L) ... abs(W_1)||_p, valid here only for p=1 or p=inf.
+    K_abs,p = ||abs(W_L) ... abs(W_1)||_p is only used for p=1 or p=inf.
+    The matrix p=2 case is intentionally unsupported; K_abs,inf is not assumed
+    to be smaller than the other p-norm bounds.
     """
     p = _norm_ord(p)
     if layers is None:
@@ -158,9 +166,13 @@ def _forward_last_regu_samples(model, X, sigma, n_samples=None):
     Certification-only sampling for R_LWA_2.
 
     The model forward remains analytic ReGU; this samples only the input to the last
-    ReGU layer and then applies fc2/ReLU/fc3 to estimate the last-layer RS radius.
+    ReGU layer and then applies that last ReGU with plain ReLU plus the output
+    layer to estimate the last-layer RS radius.
     """
-    sigma = _as_sigma_list(sigma)
+    regu_layers = _regu_layers(model)
+    sigma = _as_sigma_list(sigma, n_layers=len(regu_layers))
+    last_regu_layer = regu_layers[-1]
+    output_layer = _output_layer(model)
     was_training = model.training
     model.eval()
     n_samples = int(n_samples or getattr(model, "n_samples", 1000))
@@ -174,7 +186,7 @@ def _forward_last_regu_samples(model, X, sigma, n_samples=None):
         if sigma[-1] > 0:
             h_samples = h_samples + float(sigma[-1]) * torch.randn_like(h_samples)
 
-        logits = model.fc3(torch.relu(model.fc2(h_samples)))
+        logits = output_layer(torch.relu(last_regu_layer(h_samples)))
         logits = logits.view(batch_size, n_samples, -1)
 
     if was_training:
@@ -202,11 +214,11 @@ def affine_surrogate_parameters(model, sigma):
     """
     W_aff and b_aff for the current architecture.
 
-    fc0, fc1, and fc2 use ReGU tangent affine maps; fc3 remains the plain
-    class-score layer.
+    Hidden layers use ReGU tangent affine maps; the final classifier remains
+    the plain class-score layer.
     """
-    sigma = _as_sigma_list(sigma)
     regu_layers = _regu_layers(model)
+    sigma = _as_sigma_list(sigma, n_layers=len(regu_layers))
     output_layer = _output_layer(model)
     device = output_layer.weight.device
     dtype = output_layer.weight.dtype
@@ -230,11 +242,11 @@ def affine_surrogate_scores(model, X, sigma):
 
 def affine_deviation_bound(model, X, sigma, p=2, eps=1e-12):
     """
-    e_p(x) from Proposition 10, adapted to three ReGU hidden layers plus fc3.
+    e_p(x) from Proposition 10, adapted to this model's ReGU hidden layers.
     """
-    sigma = _as_sigma_list(sigma)
     p = _norm_ord(p)
     regu_layers = _regu_layers(model)
+    sigma = _as_sigma_list(sigma, n_layers=len(regu_layers))
     output = _output_layer(model)
     x_aff = model.flatten(X)
     batch_bounds = []
@@ -313,7 +325,7 @@ def certify_affine_deviation(X, y, model, sigma, p=2):
 
 def _certify_lwa_lipschitz(X, y, model, sigma, p=2, bound_type="k_p", n_samples=None):
     p = _norm_ord(p)
-    sigma = _as_sigma_list(sigma)
+    sigma = _as_sigma_list(sigma, n_layers=len(_regu_layers(model)))
 
     with _temporary_sigma(model, sigma):
         scores = model(X)[0]

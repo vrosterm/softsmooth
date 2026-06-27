@@ -7,20 +7,26 @@ import torch
 import torch.optim as optim
 from tqdm import tqdm
 
-CURRENT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = CURRENT_DIR.parents[0]
-for path in (CURRENT_DIR, PROJECT_ROOT):
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parents[0]
+LAYERWISE_AVG_DIR = PROJECT_ROOT / "LAYERWISE_AVG"
+OUTPUT_AVG_DIR = PROJECT_ROOT / "OUTPUT_AVG"
+
+for path in (SCRIPT_DIR, PROJECT_ROOT, LAYERWISE_AVG_DIR, OUTPUT_AVG_DIR):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from LWA_certification import certify_all_radius_results, certify_lwa_kp, _norm_label
-from LWA_MC_model import LWMC
-from LWA_model import LWRS
-from LWA_utils import (
+from LAYERWISE_AVG.LWA_certification import (  # noqa: E402
+    _norm_label,
+    _randomized_smoothing_radius_from_logits,
+    certify_all_radius_results,
+    certify_lwa_kp,
+)
+# LWA_MC integration is intentionally disabled in MAIN for now.
+# from LAYERWISE_AVG.LWA_MC_model import LWMC  # noqa: E402
+from LAYERWISE_AVG.LWA_model import LWRS  # noqa: E402
+from LAYERWISE_AVG.LWA_utils import (  # noqa: E402
     DEFAULT_CERTIFICATE_PATH,
-    DEFAULT_MC_CERTIFICATE_PATH,
-    DEFAULT_MC_MODEL_PATH,
-    DEFAULT_MC_SV_PATH,
     DEFAULT_MODEL_PATH,
     DEFAULT_SV_PATH,
     LEGACY_MODEL_PATH,
@@ -35,7 +41,14 @@ from LWA_utils import (
     load_or_initialize_checkpoint,
     pgd_l2,
 )
+from OUTPUT_AVG.OA_model import OutputAveragingRS  # noqa: E402
 
+
+OUTPUT_AVG_MODEL_DIR = OUTPUT_AVG_DIR / "models"
+DEFAULT_OUTPUT_AVG_MODEL_PATH = OUTPUT_AVG_MODEL_DIR / "OUTPUT_AVG_2regu_width256_model.pt"
+DEFAULT_OUTPUT_AVG_SV_PATH = OUTPUT_AVG_MODEL_DIR / "sv_min_2regu_width256.pt"
+DEFAULT_OUTPUT_AVG_CERTIFICATE_PATH = OUTPUT_AVG_MODEL_DIR / "output_avg_2regu_width256_certificate_results.pt"
+OUTPUT_AVG_FAMILY = "output_avg"
 
 FAMILIES = ["lwa_k_p", "lwa_k_abs", "affine_deviation", "affine"]
 FAMILY_NAMES = {
@@ -58,6 +71,10 @@ def _sample_progress(name, loader, max_samples):
         unit="sample",
         dynamic_ncols=True,
     )
+
+
+def _is_finite_radius(value):
+    return value is not None and not math.isnan(float(value)) and not math.isinf(float(value))
 
 
 def evaluate_sigma_configuration(model, test_loader, sigma, name, max_samples, n_samples, device):
@@ -86,7 +103,7 @@ def evaluate_sigma_configuration(model, test_loader, sigma, name, max_samples, n
 
                 total += 1
                 progress.update(1)
-                if label == y.item() and radius is not None and not math.isinf(radius):
+                if label == y.item() and _is_finite_radius(radius):
                     correct += 1
                     total_radius += float(radius)
 
@@ -147,7 +164,7 @@ def evaluate_certificate_suite(
                 for norm, norm_results in radii.items():
                     for family in FAMILIES:
                         value = norm_results[family]
-                        if value is None or math.isnan(value) or math.isinf(value):
+                        if not _is_finite_radius(value):
                             continue
                         summary[norm][family]["sum"] += float(value)
                         summary[norm][family]["count"] += 1
@@ -220,10 +237,11 @@ def train_or_load_model(
         return loaded_path
 
     print(f"=== Training {name} ===")
+    print(f"Optimizer weight decay: {args.weight_decay:g}")
     for epoch_num in range(args.epochs):
         print(f"{name} Epoch {epoch_num + 1}/{args.epochs}:")
         sv = compute_sv(model, sv_path)
-        train_err, train_loss = epoch_adversarial(
+        train_err, _ = epoch_adversarial(
             train_loader,
             model,
             pgd_l2,
@@ -234,8 +252,8 @@ def train_or_load_model(
             args.num_iter,
             device=device,
         )
-        test_err, test_loss = epoch(test_loader, model, opt=None, sv=sv, device=device)
-        adv_err, adv_loss = epoch_adversarial(
+        test_err, _ = epoch(test_loader, model, opt=None, sv=sv, device=device)
+        adv_err, _ = epoch_adversarial(
             test_loader,
             model,
             pgd_l2,
@@ -257,55 +275,94 @@ def train_or_load_model(
     return None
 
 
-def compare_regu_to_mc(analytic_model, test_loader, sigma, n_samples, max_batches, seed, device):
-    print("\n=== ReGU vs Layerwise Averaging MC Verification ===")
-    mc_model = LWMC(sigma=sigma, n_samples=n_samples).to(device)
-    mc_model.load_state_dict(analytic_model.state_dict())
-    analytic_model.eval()
-    mc_model.eval()
+def evaluate_output_avg_rs(
+    model,
+    test_loader,
+    sigma,
+    max_samples,
+    n_samples,
+    output_path,
+    device,
+    seed=None,
+    name="OUTPUT_AVG Standard RS",
+):
+    print(f"\n=== Evaluating {name} ===")
+    norm = "2"
+    summary = {norm: {OUTPUT_AVG_FAMILY: {"sum": 0.0, "count": 0, "avg": None}}}
+    per_sample = []
+    correct = 0
+    total = 0
+    total_radius = 0.0
 
-    diffs = []
-    with torch.no_grad():
-        for batch_idx, (x_batch, _) in enumerate(test_loader):
-            if batch_idx >= max_batches:
+    model.eval()
+    with _sample_progress(name, test_loader, max_samples) as progress:
+        for x_batch, y_batch in test_loader:
+            for idx in range(x_batch.size(0)):
+                if total >= max_samples:
+                    break
+
+                x = x_batch[idx].unsqueeze(0).to(device)
+                y = y_batch[idx].to(device)
+                if seed is not None:
+                    torch.manual_seed(seed + total)
+                    if torch.cuda.is_available():
+                        torch.cuda.manual_seed_all(seed + total)
+
+                with torch.no_grad():
+                    sample_logits = model.sample_logits(x, n_samples=n_samples)
+                label, radius = _randomized_smoothing_radius_from_logits(sample_logits, sigma, y.unsqueeze(0))
+                radius = float(radius) if _is_finite_radius(radius) else 0.0
+                radii = {norm: {OUTPUT_AVG_FAMILY: radius}}
+                per_sample.append({"index": total, "label": int(y.item()), "radii": radii})
+
+                if label == y.item() and radius > 0:
+                    correct += 1
+                    total_radius += radius
+                    summary[norm][OUTPUT_AVG_FAMILY]["sum"] += radius
+                    summary[norm][OUTPUT_AVG_FAMILY]["count"] += 1
+
+                total += 1
+                progress.update(1)
+
+            if total >= max_samples:
                 break
-            torch.manual_seed(seed + batch_idx)
-            x = x_batch.to(device)
-            analytic_scores = analytic_model(x)
-            mc_scores = mc_model(x)
-            diffs.append((analytic_scores - mc_scores).abs().detach().cpu())
 
-    if not diffs:
-        return {"mean_abs": None, "max_abs": None, "n_samples": n_samples, "batches": 0}
+    count = summary[norm][OUTPUT_AVG_FAMILY]["count"]
+    avg = summary[norm][OUTPUT_AVG_FAMILY]["sum"] / count if count > 0 else None
+    summary[norm][OUTPUT_AVG_FAMILY]["avg"] = avg
+    accuracy = 100 * correct / total if total > 0 else 0.0
+    avg_radius = total_radius / correct if correct > 0 else 0.0
+    print(f"{name} - Smooth Accuracy: {correct}/{total} ({accuracy:.1f}%)")
+    print(f"{name} - Average Certified Radius: {avg_radius:.4f}" if correct > 0 else f"{name} - No certified samples")
 
-    all_diffs = torch.cat([diff.reshape(-1) for diff in diffs])
-    result = {
-        "mean_abs": float(all_diffs.mean().item()),
-        "max_abs": float(all_diffs.max().item()),
-        "n_samples": int(n_samples),
-        "batches": int(len(diffs)),
+    payload = {
+        "sigma": float(sigma),
+        "model_name": name,
+        "norms": [norm],
+        "families": [OUTPUT_AVG_FAMILY],
+        "family_names": {OUTPUT_AVG_FAMILY: "OUTPUT_AVG standard RS"},
+        "max_samples": max_samples,
+        "total_samples": total,
+        "averages": {norm: {OUTPUT_AVG_FAMILY: avg}},
+        "summary": summary,
+        "samples": per_sample,
     }
-    print(
-        "ReGU vs MC | "
-        f"samples={result['n_samples']} | batches={result['batches']} | "
-        f"mean_abs={result['mean_abs']:.6f} | max_abs={result['max_abs']:.6f}"
-    )
-    return result
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(payload, output_path)
+    print(f"OUTPUT_AVG certificate suite saved to {output_path}")
+    return payload
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train and certify analytic layerwise averaging ReGU smoothing")
     parser.add_argument("--train", action="store_true", help="Force retraining even if a checkpoint exists")
     parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs")
-    parser.add_argument("--sigma", nargs=3, type=float, default=[0.5, 0.1, 0.1], help="Layerwise averaging ReGU sigmas")
-    parser.add_argument("--samples", type=int, default=1000, help="Certification-only MC samples for R_LWA_2")
-    parser.add_argument("--mc-samples", type=int, default=10, help="Layerwise averaging samples used by the trainable MC reference model")
-    parser.add_argument("--verify-mc-samples", type=int, default=200, help="Samples used for analytic ReGU vs MC verification")
-    parser.add_argument("--mc-certificate-model-samples", type=int, default=None, help="Layerwise MC samples for the MC certificate overlay; defaults to --verify-mc-samples")
-    parser.add_argument("--verify-batches", type=int, default=1, help="Number of test batches for ReGU vs MC verification")
-    parser.add_argument("--verification-seed", type=int, default=0, help="Seed for ReGU vs MC verification sampling")
-    parser.add_argument("--skip-mc", action="store_true", help="Skip training/loading the parallel MC reference model")
-    parser.add_argument("--include-mc-certificates", action="store_true", help="Also certify an LWA_MC reference initialized with the analytic LWA weights")
+    parser.add_argument("--sigma", nargs=2, type=float, default=[5.0, 5.0], help="Layerwise averaging ReGU sigmas")
+    parser.add_argument("--hidden-dim", type=int, default=256, help="Hidden width for the two ReGU/ReLU layers")
+    parser.add_argument("--samples", type=int, default=1000, help="Certification-only samples for R_LWA_2")
+    parser.add_argument("--verification-seed", type=int, default=0, help="Seed for randomized certificate sampling")
     parser.add_argument("--skip-layer-eval", action="store_true", help="Skip the per-layer sigma diagnostic certification sweep")
     parser.add_argument("--cert-samples", type=int, default=1000, help="Number of test examples to certify")
     parser.add_argument("--norms", nargs="+", default=["1", "2", "inf"], help="Norms to certify")
@@ -314,19 +371,26 @@ def parse_args():
     parser.add_argument("--no-download", action="store_true", help="Do not download MNIST if missing")
     parser.add_argument("--sv", action="store_true", help="Recompute singular-value regularizer cache")
     parser.add_argument("--lr", type=float, default=0.1, help="SGD learning rate")
+    parser.add_argument("--weight-decay", type=float, default=3e-3, help="SGD L2 weight decay for real weight regularization")
     parser.add_argument("--epsilon", type=float, default=0.1, help="PGD L2 epsilon")
     parser.add_argument("--alpha", type=float, default=0.01, help="PGD step size")
     parser.add_argument("--num-iter", type=int, default=40, help="PGD iterations")
     parser.add_argument("--model-path", default=str(DEFAULT_MODEL_PATH), help="Model checkpoint path")
-    parser.add_argument("--mc-model-path", default=str(DEFAULT_MC_MODEL_PATH), help="MC reference model checkpoint path")
     parser.add_argument("--certificate-path", default=str(DEFAULT_CERTIFICATE_PATH), help="Saved certificate payload")
-    parser.add_argument("--mc-certificate-path", default=str(DEFAULT_MC_CERTIFICATE_PATH), help="Saved MC reference certificate payload")
+    parser.add_argument("--skip-output-avg", action="store_true", help="Skip OUTPUT_AVG standard input RS certification")
+    parser.add_argument("--output-avg-sigma", type=float, default=5.0, help="Input-noise sigma for OUTPUT_AVG standard RS")
+    parser.add_argument("--output-avg-train-samples", type=int, default=1, help="Input-noise samples used while training OUTPUT_AVG")
+    parser.add_argument("--output-avg-samples", type=int, default=1000, help="Samples for OUTPUT_AVG standard RS")
+    parser.add_argument("--output-avg-model-path", default=str(DEFAULT_OUTPUT_AVG_MODEL_PATH), help="OUTPUT_AVG checkpoint path")
+    parser.add_argument("--output-avg-sv-path", default=str(DEFAULT_OUTPUT_AVG_SV_PATH), help="OUTPUT_AVG singular-value cache path")
+    parser.add_argument("--output-avg-certificate-path", default=str(DEFAULT_OUTPUT_AVG_CERTIFICATE_PATH), help="Saved OUTPUT_AVG certificate payload")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
     ensure_model_dir()
+    OUTPUT_AVG_MODEL_DIR.mkdir(parents=True, exist_ok=True)
     device = get_device()
     train_loader, test_loader = get_mnist_loaders(
         data_dir=args.data_dir,
@@ -334,8 +398,8 @@ def main():
         download=not args.no_download,
     )
 
-    model = LWRS(sigma=args.sigma, n_samples=args.samples).to(device)
-    optimizer = optim.SGD(model.parameters(), lr=args.lr)
+    model = LWRS(sigma=args.sigma, n_samples=args.samples, hidden_dim=args.hidden_dim).to(device)
+    optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     train_or_load_model(
         model,
         optimizer,
@@ -349,67 +413,33 @@ def main():
         legacy_path=LEGACY_MODEL_PATH,
     )
 
-    mc_model = None
-    mc_clean_acc = None
-    mc_adv_acc = None
-    if not args.skip_mc:
-        mc_model = LWMC(sigma=args.sigma, n_samples=args.mc_samples).to(device)
-        mc_optimizer = optim.SGD(mc_model.parameters(), lr=args.lr)
-        train_or_load_model(
-            mc_model,
-            mc_optimizer,
-            Path(args.mc_model_path),
-            DEFAULT_MC_SV_PATH,
-            args,
-            device,
-            "LWA MC Reference Model",
-            train_loader,
-            test_loader,
-            legacy_path=None,
-        )
-
     print("\n=== Evaluating Analytic LWA ReGU Model ===")
     clean_acc = evaluate_clean(model, test_loader, device=device)
     adv_acc = evaluate_l2(model, test_loader, args.epsilon, args.alpha, args.num_iter, device=device)
     print(f"Clean Accuracy: {clean_acc:.4f}")
     print(f"Adversarial Accuracy: {adv_acc:.4f}")
 
-    if mc_model is not None:
-        print("\n=== Evaluating LWA MC Reference Model ===")
-        mc_clean_acc = evaluate_clean(mc_model, test_loader, device=device)
-        mc_adv_acc = evaluate_l2(mc_model, test_loader, args.epsilon, args.alpha, args.num_iter, device=device)
-        print(f"MC Clean Accuracy: {mc_clean_acc:.4f}")
-        print(f"MC Adversarial Accuracy: {mc_adv_acc:.4f}")
-
-    regu_mc_comparison = compare_regu_to_mc(
-        model,
-        test_loader,
-        sigma=args.sigma,
-        n_samples=args.verify_mc_samples,
-        max_batches=args.verify_batches,
-        seed=args.verification_seed,
-        device=device,
-    )
-
     sigma = list(args.sigma)
     if args.skip_layer_eval:
         print("\n=== Skipping per-layer sigma diagnostic sweep ===")
         layer_results = {}
     else:
-        layer_results = {
-            "layer_0": evaluate_sigma_configuration(
-                model, test_loader, [sigma[0], 0.0, 0.0], f"Layer 0 ReGU - sigma {sigma[0]}", args.cert_samples, args.samples, device
-            ),
-            "layer_1": evaluate_sigma_configuration(
-                model, test_loader, [0.0, sigma[1], 0.0], f"Layer 1 ReGU - sigma {sigma[1]}", args.cert_samples, args.samples, device
-            ),
-            "layer_2": evaluate_sigma_configuration(
-                model, test_loader, [0.0, 0.0, sigma[2]], f"Layer 2 ReGU - sigma {sigma[2]}", args.cert_samples, args.samples, device
-            ),
-            "all_enabled": evaluate_sigma_configuration(
-                model, test_loader, sigma, "All ReGU layers enabled", args.cert_samples, args.samples, device
-            ),
-        }
+        layer_results = {}
+        for layer_idx, sigma_l in enumerate(sigma):
+            sigma_config = [0.0] * len(sigma)
+            sigma_config[layer_idx] = sigma_l
+            layer_results[f"layer_{layer_idx}"] = evaluate_sigma_configuration(
+                model,
+                test_loader,
+                sigma_config,
+                f"Layer {layer_idx} ReGU - sigma {sigma_l}",
+                args.cert_samples,
+                args.samples,
+                device,
+            )
+        layer_results["all_enabled"] = evaluate_sigma_configuration(
+            model, test_loader, sigma, "All ReGU layers enabled", args.cert_samples, args.samples, device
+        )
 
     certificate_results = evaluate_certificate_suite(
         model,
@@ -424,38 +454,47 @@ def main():
         seed=args.verification_seed,
     )
 
-    mc_certificate_results = None
-    if args.include_mc_certificates:
-        mc_certificate_model_samples = args.mc_certificate_model_samples or args.verify_mc_samples
-        torch.manual_seed(args.verification_seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(args.verification_seed)
-        mc_certificate_model = LWMC(sigma=args.sigma, n_samples=mc_certificate_model_samples).to(device)
-        mc_certificate_model.load_state_dict(model.state_dict())
-        mc_certificate_results = evaluate_certificate_suite(
-            mc_certificate_model,
+    output_avg_results = None
+    if not args.skip_output_avg:
+        output_avg_model = OutputAveragingRS(
+            sigma=args.output_avg_sigma,
+            n_samples=args.output_avg_train_samples,
+        ).to(device)
+        output_avg_optimizer = optim.SGD(output_avg_model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+        train_or_load_model(
+            output_avg_model,
+            output_avg_optimizer,
+            Path(args.output_avg_model_path),
+            Path(args.output_avg_sv_path),
+            args,
+            device,
+            "OUTPUT_AVG Standard RS Model",
+            train_loader,
             test_loader,
-            sigma=sigma,
-            norms=args.norms,
+            legacy_path=None,
+        )
+        output_avg_model.n_samples = args.output_avg_samples
+        output_avg_results = evaluate_output_avg_rs(
+            output_avg_model,
+            test_loader,
+            sigma=args.output_avg_sigma,
             max_samples=args.cert_samples,
-            n_samples=args.samples,
-            output_path=args.mc_certificate_path,
+            n_samples=args.output_avg_samples,
+            output_path=args.output_avg_certificate_path,
             device=device,
-            name="LWA_MC Certificate Suite",
             seed=args.verification_seed,
         )
 
-    combined_path = CURRENT_DIR / "models" / f"lwa_results_sigma_{sigma}.pt"
+    combined_path = Path(args.certificate_path).with_name(f"{Path(args.certificate_path).stem}_combined.pt")
     torch.save(
         {
             "layer_results": layer_results,
             "certificate_results": certificate_results,
-            "mc_certificate_results": mc_certificate_results,
+            "output_avg_results": output_avg_results,
             "clean_accuracy": clean_acc,
             "adversarial_accuracy": adv_acc,
-            "mc_clean_accuracy": mc_clean_acc,
-            "mc_adversarial_accuracy": mc_adv_acc,
-            "regu_mc_comparison": regu_mc_comparison,
+            "weight_decay": args.weight_decay,
+            "hidden_dim": args.hidden_dim,
         },
         combined_path,
     )

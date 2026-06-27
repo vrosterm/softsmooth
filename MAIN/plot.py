@@ -1,5 +1,6 @@
 import argparse
 import math
+import sys
 from pathlib import Path
 
 import matplotlib
@@ -9,28 +10,41 @@ import matplotlib.pyplot as plt
 import torch
 
 
-CURRENT_DIR = Path(__file__).resolve().parent
-DEFAULT_INPUT = CURRENT_DIR / "models" / "lwa_certificate_results.pt"
-DEFAULT_MC_INPUT = CURRENT_DIR / "models" / "lwa_mc_certificate_results.pt"
-DEFAULT_OUTPUT = CURRENT_DIR / "models" / "lwa_certificate_waterfall.png"
-CERTIFICATE_ORDER = ["lwa_k_p", "lwa_k_abs", "affine_deviation", "affine"]
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parents[0]
+LAYERWISE_AVG_DIR = PROJECT_ROOT / "LAYERWISE_AVG"
+OUTPUT_AVG_DIR = PROJECT_ROOT / "OUTPUT_AVG"
+for path in (SCRIPT_DIR, PROJECT_ROOT, LAYERWISE_AVG_DIR, OUTPUT_AVG_DIR):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
+
+from LAYERWISE_AVG.LWA_utils import DEFAULT_CERTIFICATE_PATH, DEFAULT_PLOT_PATH  # noqa: E402
+
+
+DEFAULT_INPUT = DEFAULT_CERTIFICATE_PATH
+DEFAULT_OUTPUT_AVG_INPUT = OUTPUT_AVG_DIR / "models" / "output_avg_2regu_width256_certificate_results.pt"
+DEFAULT_OUTPUT = DEFAULT_PLOT_PATH
+CERTIFICATE_ORDER = ["lwa_k_p", "lwa_k_abs", "affine_deviation", "affine", "output_avg"]
 DEFAULT_LABELS = {
     "lwa_k_p": "LWA K_p",
     "lwa_k_abs": "LWA K_abs",
     "affine_deviation": "Affine dev.",
     "affine": "Affine",
+    "output_avg": "Standard RS",
 }
 COLORS = {
     "lwa_k_p": "#3b82f6",
     "lwa_k_abs": "#14b8a6",
     "affine_deviation": "#f59e0b",
     "affine": "#111827",
+    "output_avg": "#dc2626",
 }
 LINE_STYLES = {
     "lwa_k_p": "-",
     "lwa_k_abs": "--",
     "affine_deviation": "-.",
     "affine": ":",
+    "output_avg": "-",
 }
 MODEL_LINE_STYLES = ["-", "--", "-.", ":"]
 NORM_LABELS = {
@@ -55,14 +69,17 @@ matplotlib.rcParams.update({
 
 def _load_payload(path, result_key=None):
     payload = torch.load(path, map_location="cpu")
-    if result_key is not None and result_key in payload:
-        payload = payload[result_key]
+    if result_key is not None:
+        if result_key in payload:
+            payload = payload[result_key]
+        elif "samples" not in payload:
+            raise ValueError(f"{path} does not contain {result_key}")
     elif "certificate_results" in payload:
         payload = payload["certificate_results"]
-    elif "mc_certificate_results" in payload:
-        payload = payload["mc_certificate_results"]
+    elif "output_avg_results" in payload:
+        payload = payload["output_avg_results"]
     if payload is None or "samples" not in payload:
-        raise ValueError(f"{path} does not contain per-sample LWA certificate results")
+        raise ValueError(f"{path} does not contain per-sample certificate results")
     return payload
 
 
@@ -94,7 +111,7 @@ def _sample_radii(samples, norm, family):
             continue
 
         has_supported_values = True
-        # Failed or incorrect certificates are stored as 0.0 by LWA_main.py.
+        # Failed or incorrect certificates are stored as 0.0 by MAIN/main.py.
         radii.append(value if value > 0 else -1.0)
 
     return radii if has_supported_values else []
@@ -220,9 +237,9 @@ def plot_waterfall(named_payloads, output_path, points=1000, max_radius=None, fa
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Plot LWA ReGU certified-accuracy waterfall curves")
-    parser.add_argument("--input", default=str(DEFAULT_INPUT), help="Certificate result .pt file from LWA_main.py")
-    parser.add_argument("--mc-input", default="auto", help="Optional LWA_MC certificate result .pt file to overlay; use 'none' to disable auto-overlay")
+    parser = argparse.ArgumentParser(description="Plot LWA and OUTPUT_AVG certified-accuracy waterfall curves")
+    parser.add_argument("--input", default=str(DEFAULT_INPUT), help="LWA certificate result .pt file from MAIN/main.py")
+    parser.add_argument("--output-avg-input", default="auto", help="Optional OUTPUT_AVG result .pt file to overlay; use 'none' to disable auto-overlay")
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT), help="Output image path")
     parser.add_argument("--families", nargs="+", choices=CERTIFICATE_ORDER, default=CERTIFICATE_ORDER, help="Certificate families to plot")
     parser.add_argument("--points", type=int, default=1000, help="Number of radius thresholds to plot")
@@ -230,12 +247,12 @@ def main():
     args = parser.parse_args()
 
     named_payloads = [("LWA", _load_payload(args.input, result_key="certificate_results"))]
-    mc_input_arg = args.mc_input.lower()
-    mc_input = None if mc_input_arg == "none" else args.mc_input
-    if mc_input_arg == "auto":
-        mc_input = str(DEFAULT_MC_INPUT) if DEFAULT_MC_INPUT.exists() else None
-    if mc_input is not None:
-        named_payloads.append(("LWA_MC", _load_payload(mc_input, result_key="mc_certificate_results")))
+    output_avg_arg = args.output_avg_input.lower()
+    output_avg_input = None if output_avg_arg == "none" else args.output_avg_input
+    if output_avg_arg == "auto":
+        output_avg_input = str(DEFAULT_OUTPUT_AVG_INPUT) if DEFAULT_OUTPUT_AVG_INPUT.exists() else None
+    if output_avg_input is not None:
+        named_payloads.append(("OUTPUT_AVG", _load_payload(output_avg_input, result_key="output_avg_results")))
 
     output_paths = plot_waterfall(
         named_payloads,

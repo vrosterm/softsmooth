@@ -10,14 +10,14 @@ from tqdm import tqdm
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 LAYERWISE_AVG_DIR = Path(__file__).resolve().parent
 MODEL_DIR = LAYERWISE_AVG_DIR / "models"
-DEFAULT_MODEL_PATH = MODEL_DIR / "LWA_layerwise_model.pt"
+DEFAULT_MODEL_PATH = MODEL_DIR / "LWA_2regu_width256_model.pt"
 DEFAULT_MC_MODEL_PATH = MODEL_DIR / "LWA_MC_layerwise_model.pt"
-DEFAULT_SV_PATH = MODEL_DIR / "sv_min.pt"
+DEFAULT_SV_PATH = MODEL_DIR / "sv_min_2regu_width256.pt"
 DEFAULT_MC_SV_PATH = MODEL_DIR / "mc_sv_min.pt"
-DEFAULT_CERTIFICATE_PATH = MODEL_DIR / "lwa_certificate_results.pt"
+DEFAULT_CERTIFICATE_PATH = MODEL_DIR / "lwa_2regu_width256_certificate_results.pt"
 DEFAULT_MC_CERTIFICATE_PATH = MODEL_DIR / "lwa_mc_certificate_results.pt"
-DEFAULT_PLOT_PATH = MODEL_DIR / "lwa_certificate_waterfall.png"
-LEGACY_MODEL_PATH = PROJECT_ROOT / "SU25_LWRS" / "models" / "LWRS_layerwise_model.pt"
+DEFAULT_PLOT_PATH = MODEL_DIR / "lwa_2regu_width256_certificate_waterfall.png"
+LEGACY_MODEL_PATH = None
 
 
 def get_device():
