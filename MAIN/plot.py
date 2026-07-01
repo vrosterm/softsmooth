@@ -23,7 +23,7 @@ from LAYERWISE_AVG.LWA_utils import DEFAULT_CERTIFICATE_PATH, DEFAULT_PLOT_PATH 
 
 DEFAULT_INPUT = DEFAULT_CERTIFICATE_PATH
 DEFAULT_OUTPUT_AVG_INPUT = OUTPUT_AVG_DIR / "models" / "output_avg_standard_rs_width784_certificate_results.pt"
-DEFAULT_OUTPUT = PROJECT_ROOT / "figs" / "figs" / DEFAULT_PLOT_PATH.name
+DEFAULT_OUTPUT = PROJECT_ROOT / "figs" / "results" / DEFAULT_PLOT_PATH.name
 CERTIFICATE_ORDER = ["lwa_k_p", "lwa_k_abs", "affine", "output_avg"]
 OUTPUT_AVG_FAMILY = "output_avg"
 STANDARD_RS_NORMS = ["1", "2", "inf"]
