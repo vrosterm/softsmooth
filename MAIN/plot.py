@@ -22,36 +22,55 @@ from LAYERWISE_AVG.LWA_utils import DEFAULT_CERTIFICATE_PATH, DEFAULT_PLOT_PATH 
 
 
 DEFAULT_INPUT = DEFAULT_CERTIFICATE_PATH
-DEFAULT_OUTPUT_AVG_INPUT = OUTPUT_AVG_DIR / "models" / "output_avg_2regu_width256_certificate_results.pt"
-DEFAULT_OUTPUT = DEFAULT_PLOT_PATH
-CERTIFICATE_ORDER = ["lwa_k_p", "lwa_k_abs", "affine_deviation", "affine", "output_avg"]
+DEFAULT_OUTPUT_AVG_INPUT = OUTPUT_AVG_DIR / "models" / "output_avg_standard_rs_width784_certificate_results.pt"
+DEFAULT_OUTPUT = PROJECT_ROOT / "figs" / "figs" / DEFAULT_PLOT_PATH.name
+CERTIFICATE_ORDER = ["lwa_k_p", "lwa_k_abs", "affine", "output_avg"]
+OUTPUT_AVG_FAMILY = "output_avg"
+STANDARD_RS_NORMS = ["1", "2", "inf"]
+STANDARD_RS_INPUT_DIM = 784
 DEFAULT_LABELS = {
-    "lwa_k_p": "LWA K_p",
-    "lwa_k_abs": "LWA K_abs",
-    "affine_deviation": "Affine dev.",
-    "affine": "Affine",
+    "lwa_k_p": r"LWA ($K_p$)",
+    "lwa_k_abs": r"LWA ($K_{\mathrm{abs}}$)",
+    # "affine_deviation": "Affine dev.",
+    "affine": "Affine Surrogate",
+    "output_avg": "Standard RS",
+}
+PGF_LABELS = {
+    "lwa_k_p": r"LWA ($K_p$)",
+    "lwa_k_abs": r"LWA ($K_{\textup{abs}}$)",
+    "affine": "Affine Surrogate",
     "output_avg": "Standard RS",
 }
 COLORS = {
     "lwa_k_p": "#3b82f6",
     "lwa_k_abs": "#14b8a6",
-    "affine_deviation": "#f59e0b",
+    # "affine_deviation": "#f59e0b",
     "affine": "#111827",
     "output_avg": "#dc2626",
 }
 LINE_STYLES = {
     "lwa_k_p": "-",
-    "lwa_k_abs": "--",
-    "affine_deviation": "-.",
-    "affine": ":",
-    "output_avg": "-",
+    "lwa_k_abs": "-",
+    # "affine_deviation": "-.",
+    "affine": "-",
+    "output_avg": "--",
 }
-MODEL_LINE_STYLES = ["-", "--", "-.", ":"]
 NORM_LABELS = {
     "1": r"$\ell_1$-Radius",
     "2": r"$\ell_2$-Radius",
     "inf": r"$\ell_{\infty}$-Radius",
 }
+NORM_AXIS_LIMITS = {
+    "1": 5.0,
+    "2": 3.0,
+    "inf": 0.2,
+}
+NORM_X_TICKS = {
+    "1": [0, 1, 2, 3, 4, 5],
+    "2": [0, 1, 2, 3],
+    "inf": [0, 0.05, 0.10, 0.15, 0.20],
+}
+Y_TICKS = [0, 0.2, 0.4, 0.6, 0.8, 1.0]
 FIG_WIDTH_IN = 2.925
 FIG_HEIGHT_IN = 2.486
 PLOT_LINEWIDTH = 1.5
@@ -90,6 +109,36 @@ def _finite_or_none(value):
     if math.isnan(value) or math.isinf(value):
         return None
     return value
+
+
+def _standard_rs_radii_from_l2(radius_l2, input_dim):
+    radius_l2 = float(radius_l2)
+    return {
+        "1": radius_l2,
+        "2": radius_l2,
+        "inf": radius_l2 / math.sqrt(float(input_dim)),
+    }
+
+
+def _augment_output_avg_norm_conversions(payload):
+    input_dim = payload.get("input_dim") or STANDARD_RS_INPUT_DIM
+    norms = list(payload.get("norms", []))
+
+    for sample in payload["samples"]:
+        radii = sample.setdefault("radii", {})
+        l2_result = radii.get("2", {})
+        radius_l2 = _finite_or_none(l2_result.get(OUTPUT_AVG_FAMILY))
+        if radius_l2 is None:
+            continue
+
+        for norm, radius in _standard_rs_radii_from_l2(radius_l2, input_dim).items():
+            radii.setdefault(norm, {}).setdefault(OUTPUT_AVG_FAMILY, radius)
+            if norm not in norms:
+                norms.append(norm)
+
+    payload["norms"] = [norm for norm in STANDARD_RS_NORMS if norm in norms]
+    payload["input_dim"] = input_dim
+    return payload
 
 
 def _linspace(start, stop, count):
@@ -158,12 +207,105 @@ def _norm_output_path(output_path, norm):
     return output_path.with_name(f"{output_path.stem}_{_norm_file_label(norm)}{output_path.suffix}")
 
 
-def _line_label(model_name, family, family_count, model_count):
-    if model_count == 1:
-        return DEFAULT_LABELS[family]
-    if family_count == 1:
-        return model_name
-    return f"{model_name} {DEFAULT_LABELS[family]}"
+def _pgf_output_path(output_path):
+    return Path(output_path).with_suffix(".pgf")
+
+
+def _pgfplots_line_style(line_style):
+    return {
+        "-": "solid",
+        "--": "dashed",
+        "-.": "dash dot",
+        ":": "dotted",
+    }.get(line_style, "solid")
+
+
+def _hex_to_rgb(hex_color):
+    hex_color = hex_color.lstrip("#")
+    return tuple(int(hex_color[idx : idx + 2], 16) for idx in (0, 2, 4))
+
+
+def _escape_pgf_text(text):
+    text = str(text)
+    if "$" in text:
+        return text
+    return text.replace("_", r"\_")
+
+
+def _format_tick(value):
+    value = float(value)
+    if value.is_integer():
+        return str(int(value))
+    return f"{value:.2f}".rstrip("0").rstrip(".")
+
+
+def _pgf_tick_list(ticks):
+    return "{" + ",".join(_format_tick(tick) for tick in ticks) + "}"
+
+
+def _norm_axis_limit(norm):
+    return NORM_AXIS_LIMITS.get(str(norm))
+
+
+def _norm_x_ticks(norm):
+    return NORM_X_TICKS.get(str(norm))
+
+
+def _include_family_for_norm(family, norm):
+    return not (family == "lwa_k_abs" and str(norm) == "2")
+
+
+def _write_pgfplots(path, series, norm, max_radius):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    axis_label = _norm_axis_label(norm)
+
+    lines = [
+        r"\begin{tikzpicture}",
+        r"\begin{axis}[",
+        f"  width={FIG_WIDTH_IN}in,",
+        f"  height={FIG_HEIGHT_IN}in,",
+        "  xmin=0,",
+        f"  xmax={max_radius:.12g},",
+        "  ymin=0,",
+        "  ymax=1,",
+        f"  xlabel={{{axis_label}}},",
+        r"  ylabel={Certified Accuracy},",
+        r"  legend pos=north east,",
+        r"  legend cell align=left,",
+        r"  legend style={font=\scriptsize, fill=white, fill opacity=0.95, draw=black},",
+        r"  tick align=outside,",
+        f"  ytick={_pgf_tick_list(Y_TICKS)},",
+    ]
+    x_ticks = _norm_x_ticks(norm)
+    if x_ticks is not None:
+        lines.append(f"  xtick={_pgf_tick_list(x_ticks)},")
+    lines.append(r"]")
+
+    for idx, item in enumerate(series):
+        color_name = f"certcolor{idx}"
+        red, green, blue = _hex_to_rgb(item["color"])
+        lines.append(f"\\definecolor{{{color_name}}}{{RGB}}{{{red},{green},{blue}}}")
+        lines.append(
+            "\\addplot+["
+            f"no markers, color={color_name}, {_pgfplots_line_style(item['line_style'])}, "
+            f"line width={PLOT_LINEWIDTH}pt"
+            "] coordinates {"
+        )
+        lines.extend(f"({x:.12g},{y:.12g})" for x, y in zip(item["x"], item["y"]))
+        lines.append("};")
+        lines.append(f"\\addlegendentry{{{_escape_pgf_text(item['pgf_label'])}}}")
+
+    lines.extend([r"\end{axis}", r"\end{tikzpicture}", ""])
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _line_label(family):
+    return DEFAULT_LABELS[family]
+
+
+def _pgf_line_label(family):
+    return PGF_LABELS[family]
 
 
 def plot_waterfall(named_payloads, output_path, points=1000, max_radius=None, families=None):
@@ -178,11 +320,10 @@ def plot_waterfall(named_payloads, output_path, points=1000, max_radius=None, fa
         raise ValueError("No norms found in the certificate payload")
 
     output_paths = []
-    model_count = len(named_payloads)
-    family_count = len(families)
-
     for norm in norms:
         norm_max_radius = max_radius
+        if norm_max_radius is None:
+            norm_max_radius = _norm_axis_limit(norm)
         if norm_max_radius is None:
             norm_max_radius = _max_positive_radius(named_payloads, [norm], families) * 1.1
         norm_max_radius = max(float(norm_max_radius), 1e-12)
@@ -191,22 +332,38 @@ def plot_waterfall(named_payloads, output_path, points=1000, max_radius=None, fa
         fig = plt.figure(dpi=72, figsize=(FIG_WIDTH_IN, FIG_HEIGHT_IN))
         ax = plt.gca()
         plotted_any = False
+        pgf_series = []
 
-        for model_idx, (model_name, payload) in enumerate(named_payloads):
+        for _, payload in named_payloads:
             samples = payload["samples"]
             for family in families:
+                if not _include_family_for_norm(family, norm):
+                    continue
+
                 radii = _sample_radii(samples, norm, family)
                 if not radii:
                     continue
 
-                line_style = MODEL_LINE_STYLES[model_idx % len(MODEL_LINE_STYLES)] if model_count > 1 else LINE_STYLES[family]
+                line_style = LINE_STYLES[family]
+                label = _line_label(family)
+                accuracies = _certified_accuracies(radii, plot_radii)
                 ax.plot(
                     plot_radii,
-                    _certified_accuracies(radii, plot_radii),
+                    accuracies,
                     color=COLORS[family],
                     linestyle=line_style,
                     linewidth=PLOT_LINEWIDTH,
-                    label=_line_label(model_name, family, family_count, model_count),
+                    label=label,
+                )
+                pgf_series.append(
+                    {
+                        "x": plot_radii,
+                        "y": accuracies,
+                        "color": COLORS[family],
+                        "line_style": line_style,
+                        "label": label,
+                        "pgf_label": _pgf_line_label(family),
+                    }
                 )
                 plotted_any = True
 
@@ -215,9 +372,13 @@ def plot_waterfall(named_payloads, output_path, points=1000, max_radius=None, fa
 
         ax.set_xlim(0, norm_max_radius)
         ax.set_ylim(0, 1)
+        x_ticks = _norm_x_ticks(norm)
+        if x_ticks is not None:
+            ax.set_xticks(x_ticks)
+        ax.set_yticks(Y_TICKS)
         ax.set_xlabel(_norm_axis_label(norm))
         ax.set_ylabel("Certified Accuracy")
-        ax.legend(
+        legend = ax.legend(
             loc="upper right",
             handlelength=2.0,
             handletextpad=0.6,
@@ -225,13 +386,20 @@ def plot_waterfall(named_payloads, output_path, points=1000, max_radius=None, fa
             borderpad=0.3,
             framealpha=0.95,
         )
+        if legend is not None:
+            legend._legend_box.align = "left"
+            for text in legend.get_texts():
+                text.set_ha("left")
 
         fig.subplots_adjust(left=0.18, right=0.98, bottom=0.18, top=0.90)
         norm_output_path = _norm_output_path(output_path, norm)
         norm_output_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(norm_output_path, dpi=300, bbox_inches="tight")
+        pgf_output_path = _pgf_output_path(norm_output_path)
+        _write_pgfplots(pgf_output_path, pgf_series, norm, norm_max_radius)
         plt.close(fig)
         output_paths.append(norm_output_path)
+        output_paths.append(pgf_output_path)
 
     return output_paths
 
@@ -252,7 +420,10 @@ def main():
     if output_avg_arg == "auto":
         output_avg_input = str(DEFAULT_OUTPUT_AVG_INPUT) if DEFAULT_OUTPUT_AVG_INPUT.exists() else None
     if output_avg_input is not None:
-        named_payloads.append(("OUTPUT_AVG", _load_payload(output_avg_input, result_key="output_avg_results")))
+        output_avg_payload = _augment_output_avg_norm_conversions(
+            _load_payload(output_avg_input, result_key="output_avg_results")
+        )
+        named_payloads.append(("OUTPUT_AVG", output_avg_payload))
 
     output_paths = plot_waterfall(
         named_payloads,

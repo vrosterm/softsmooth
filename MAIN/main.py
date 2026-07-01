@@ -45,16 +45,17 @@ from OUTPUT_AVG.OA_model import OutputAveragingRS  # noqa: E402
 
 
 OUTPUT_AVG_MODEL_DIR = OUTPUT_AVG_DIR / "models"
-DEFAULT_OUTPUT_AVG_MODEL_PATH = OUTPUT_AVG_MODEL_DIR / "OUTPUT_AVG_2regu_width256_model.pt"
-DEFAULT_OUTPUT_AVG_SV_PATH = OUTPUT_AVG_MODEL_DIR / "sv_min_2regu_width256.pt"
-DEFAULT_OUTPUT_AVG_CERTIFICATE_PATH = OUTPUT_AVG_MODEL_DIR / "output_avg_2regu_width256_certificate_results.pt"
+DEFAULT_OUTPUT_AVG_MODEL_PATH = OUTPUT_AVG_MODEL_DIR / "OUTPUT_AVG_standard_rs_width784_model.pt"
+DEFAULT_OUTPUT_AVG_SV_PATH = OUTPUT_AVG_MODEL_DIR / "sv_min_standard_rs_width784.pt"
+DEFAULT_OUTPUT_AVG_CERTIFICATE_PATH = OUTPUT_AVG_MODEL_DIR / "output_avg_standard_rs_width784_certificate_results.pt"
 OUTPUT_AVG_FAMILY = "output_avg"
+STANDARD_RS_NORMS = ["1", "2", "inf"]
 
-FAMILIES = ["lwa_k_p", "lwa_k_abs", "affine_deviation", "affine"]
+FAMILIES = ["lwa_k_p", "lwa_k_abs", "affine"]
 FAMILY_NAMES = {
     "lwa_k_p": "max(R_LWA_1,R_LWA_2) with K_p",
     "lwa_k_abs": "max(R_LWA_1,R_LWA_2) with K_abs",
-    "affine_deviation": "Affine surrogate deviation r_p",
+    # "affine_deviation": "Affine surrogate deviation r_p",
     "affine": "Affine surrogate r_aff,p",
 }
 
@@ -75,6 +76,15 @@ def _sample_progress(name, loader, max_samples):
 
 def _is_finite_radius(value):
     return value is not None and not math.isnan(float(value)) and not math.isinf(float(value))
+
+
+def _standard_rs_radii_from_l2(radius_l2, input_dim):
+    radius_l2 = float(radius_l2)
+    return {
+        "1": radius_l2,
+        "2": radius_l2,
+        "inf": radius_l2 / math.sqrt(float(input_dim)),
+    }
 
 
 def evaluate_sigma_configuration(model, test_loader, sigma, name, max_samples, n_samples, device):
@@ -163,7 +173,7 @@ def evaluate_certificate_suite(
 
                 for norm, norm_results in radii.items():
                     for family in FAMILIES:
-                        value = norm_results[family]
+                        value = norm_results.get(family)
                         if not _is_finite_radius(value):
                             continue
                         summary[norm][family]["sum"] += float(value)
@@ -184,11 +194,11 @@ def evaluate_certificate_suite(
             summary[norm][family]["avg"] = avg
             averages[norm][family] = avg
 
-    print("Norm | K_p LWA | K_abs LWA | Affine deviation | Affine")
-    print("-" * 70)
+    print("Norm | K_p LWA | K_abs LWA | Affine")
+    print("-" * 48)
     for norm in norm_labels:
         row = ["n/a" if averages[norm][family] is None else f"{averages[norm][family]:.6f}" for family in FAMILIES]
-        print(f"{norm:>4} | {row[0]:>8} | {row[1]:>9} | {row[2]:>16} | {row[3]:>8}")
+        print(f"{norm:>4} | {row[0]:>8} | {row[1]:>9} | {row[2]:>8}")
 
     payload = {
         "sigma": list(sigma),
@@ -251,6 +261,7 @@ def train_or_load_model(
             args.alpha,
             args.num_iter,
             device=device,
+            weight_clip_alpha=args.weight_clip_alpha,
         )
         test_err, _ = epoch(test_loader, model, opt=None, sv=sv, device=device)
         adv_err, _ = epoch_adversarial(
@@ -287,12 +298,12 @@ def evaluate_output_avg_rs(
     name="OUTPUT_AVG Standard RS",
 ):
     print(f"\n=== Evaluating {name} ===")
-    norm = "2"
-    summary = {norm: {OUTPUT_AVG_FAMILY: {"sum": 0.0, "count": 0, "avg": None}}}
+    summary = {norm: {OUTPUT_AVG_FAMILY: {"sum": 0.0, "count": 0, "avg": None}} for norm in STANDARD_RS_NORMS}
     per_sample = []
     correct = 0
     total = 0
     total_radius = 0.0
+    input_dim = None
 
     model.eval()
     with _sample_progress(name, test_loader, max_samples) as progress:
@@ -303,6 +314,8 @@ def evaluate_output_avg_rs(
 
                 x = x_batch[idx].unsqueeze(0).to(device)
                 y = y_batch[idx].to(device)
+                if input_dim is None:
+                    input_dim = int(x[0].numel())
                 if seed is not None:
                     torch.manual_seed(seed + total)
                     if torch.cuda.is_available():
@@ -310,16 +323,18 @@ def evaluate_output_avg_rs(
 
                 with torch.no_grad():
                     sample_logits = model.sample_logits(x, n_samples=n_samples)
-                label, radius = _randomized_smoothing_radius_from_logits(sample_logits, sigma, y.unsqueeze(0))
-                radius = float(radius) if _is_finite_radius(radius) else 0.0
-                radii = {norm: {OUTPUT_AVG_FAMILY: radius}}
+                label, radius_l2 = _randomized_smoothing_radius_from_logits(sample_logits, sigma, y.unsqueeze(0))
+                radius_l2 = float(radius_l2) if _is_finite_radius(radius_l2) else 0.0
+                converted_radii = _standard_rs_radii_from_l2(radius_l2, input_dim)
+                radii = {norm: {OUTPUT_AVG_FAMILY: radius} for norm, radius in converted_radii.items()}
                 per_sample.append({"index": total, "label": int(y.item()), "radii": radii})
 
-                if label == y.item() and radius > 0:
+                if label == y.item() and radius_l2 > 0:
                     correct += 1
-                    total_radius += radius
-                    summary[norm][OUTPUT_AVG_FAMILY]["sum"] += radius
-                    summary[norm][OUTPUT_AVG_FAMILY]["count"] += 1
+                    total_radius += radius_l2
+                    for norm, radius in converted_radii.items():
+                        summary[norm][OUTPUT_AVG_FAMILY]["sum"] += radius
+                        summary[norm][OUTPUT_AVG_FAMILY]["count"] += 1
 
                 total += 1
                 progress.update(1)
@@ -327,23 +342,27 @@ def evaluate_output_avg_rs(
             if total >= max_samples:
                 break
 
-    count = summary[norm][OUTPUT_AVG_FAMILY]["count"]
-    avg = summary[norm][OUTPUT_AVG_FAMILY]["sum"] / count if count > 0 else None
-    summary[norm][OUTPUT_AVG_FAMILY]["avg"] = avg
+    averages = {}
+    for norm in STANDARD_RS_NORMS:
+        count = summary[norm][OUTPUT_AVG_FAMILY]["count"]
+        avg = summary[norm][OUTPUT_AVG_FAMILY]["sum"] / count if count > 0 else None
+        summary[norm][OUTPUT_AVG_FAMILY]["avg"] = avg
+        averages[norm] = {OUTPUT_AVG_FAMILY: avg}
     accuracy = 100 * correct / total if total > 0 else 0.0
     avg_radius = total_radius / correct if correct > 0 else 0.0
     print(f"{name} - Smooth Accuracy: {correct}/{total} ({accuracy:.1f}%)")
-    print(f"{name} - Average Certified Radius: {avg_radius:.4f}" if correct > 0 else f"{name} - No certified samples")
+    print(f"{name} - Average L2 Certified Radius: {avg_radius:.4f}" if correct > 0 else f"{name} - No certified samples")
 
     payload = {
         "sigma": float(sigma),
         "model_name": name,
-        "norms": [norm],
+        "norms": STANDARD_RS_NORMS,
         "families": [OUTPUT_AVG_FAMILY],
         "family_names": {OUTPUT_AVG_FAMILY: "OUTPUT_AVG standard RS"},
+        "input_dim": input_dim,
         "max_samples": max_samples,
         "total_samples": total,
-        "averages": {norm: {OUTPUT_AVG_FAMILY: avg}},
+        "averages": averages,
         "summary": summary,
         "samples": per_sample,
     }
@@ -359,8 +378,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Train and certify analytic layerwise averaging ReGU smoothing")
     parser.add_argument("--train", action="store_true", help="Force retraining even if a checkpoint exists")
     parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs")
-    parser.add_argument("--sigma", nargs=2, type=float, default=[5.0, 5.0], help="Layerwise averaging ReGU sigmas")
-    parser.add_argument("--hidden-dim", type=int, default=256, help="Hidden width for the two ReGU/ReLU layers")
+    parser.add_argument("--sigma", nargs=2, type=float, default=[2.0, 2.0], help="Layerwise averaging ReGU sigmas")
+    parser.add_argument("--hidden-dim", type=int, default=784, help="Hidden width for the two LWA ReGU layers")
     parser.add_argument("--samples", type=int, default=1000, help="Certification-only samples for R_LWA_2")
     parser.add_argument("--verification-seed", type=int, default=0, help="Seed for randomized certificate sampling")
     parser.add_argument("--skip-layer-eval", action="store_true", help="Skip the per-layer sigma diagnostic certification sweep")
@@ -372,13 +391,14 @@ def parse_args():
     parser.add_argument("--sv", action="store_true", help="Recompute singular-value regularizer cache")
     parser.add_argument("--lr", type=float, default=0.1, help="SGD learning rate")
     parser.add_argument("--weight-decay", type=float, default=3e-3, help="SGD L2 weight decay for real weight regularization")
+    parser.add_argument("--weight-clip-alpha", type=float, default=None, help="Optional spectral-norm cap applied to each linear weight after optimizer steps")
     parser.add_argument("--epsilon", type=float, default=0.1, help="PGD L2 epsilon")
     parser.add_argument("--alpha", type=float, default=0.01, help="PGD step size")
     parser.add_argument("--num-iter", type=int, default=40, help="PGD iterations")
     parser.add_argument("--model-path", default=str(DEFAULT_MODEL_PATH), help="Model checkpoint path")
     parser.add_argument("--certificate-path", default=str(DEFAULT_CERTIFICATE_PATH), help="Saved certificate payload")
     parser.add_argument("--skip-output-avg", action="store_true", help="Skip OUTPUT_AVG standard input RS certification")
-    parser.add_argument("--output-avg-sigma", type=float, default=5.0, help="Input-noise sigma for OUTPUT_AVG standard RS")
+    parser.add_argument("--output-avg-sigma", type=float, default=2.0, help="Input-noise sigma for OUTPUT_AVG standard RS")
     parser.add_argument("--output-avg-train-samples", type=int, default=1, help="Input-noise samples used while training OUTPUT_AVG")
     parser.add_argument("--output-avg-samples", type=int, default=1000, help="Samples for OUTPUT_AVG standard RS")
     parser.add_argument("--output-avg-model-path", default=str(DEFAULT_OUTPUT_AVG_MODEL_PATH), help="OUTPUT_AVG checkpoint path")

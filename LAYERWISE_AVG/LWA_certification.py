@@ -240,38 +240,41 @@ def affine_surrogate_scores(model, X, sigma):
     return model.flatten(X) @ W_aff.T + b_aff
 
 
-def affine_deviation_bound(model, X, sigma, p=2, eps=1e-12):
-    """
-    e_p(x) from Proposition 10, adapted to this model's ReGU hidden layers.
-    """
-    p = _norm_ord(p)
-    regu_layers = _regu_layers(model)
-    sigma = _as_sigma_list(sigma, n_layers=len(regu_layers))
-    output = _output_layer(model)
-    x_aff = model.flatten(X)
-    batch_bounds = []
-
-    for sample_idx in range(x_aff.size(0)):
-        activation = x_aff[sample_idx]
-        total = activation.new_tensor(0.0)
-
-        for layer_idx, layer in enumerate(regu_layers):
-            z_aff = layer(activation)
-            std = _row_noise_std(layer, sigma[layer_idx]).clamp_min(eps)
-            delta_l = z_aff.pow(2) / (2 * math.sqrt(2 * math.pi) * std)
-            delta_norm = _vector_norm(delta_l, p)
-
-            propagation = activation.new_tensor(1.0)
-            for later_layer in regu_layers[layer_idx + 1:]:
-                propagation = propagation * _row_norm_factor(later_layer, p)
-            propagation = propagation * _row_norm_factor(output, p)
-
-            total = total + propagation * delta_norm
-            activation = 0.5 * z_aff + _row_noise_std(layer, sigma[layer_idx]) / math.sqrt(2 * math.pi)
-
-        batch_bounds.append(total)
-
-    return torch.stack(batch_bounds)
+# Affine-deviation certification is disabled for now. The previous full-network
+# implementation is kept here as comments until replacement math is settled.
+#
+# def affine_deviation_bound(model, X, sigma, p=2, eps=1e-12):
+#     """
+#     e_p(x) from Proposition 10, adapted to this model's ReGU hidden layers.
+#     """
+#     p = _norm_ord(p)
+#     regu_layers = _regu_layers(model)
+#     sigma = _as_sigma_list(sigma, n_layers=len(regu_layers))
+#     output = _output_layer(model)
+#     x_aff = model.flatten(X)
+#     batch_bounds = []
+#
+#     for sample_idx in range(x_aff.size(0)):
+#         activation = x_aff[sample_idx]
+#         total = activation.new_tensor(0.0)
+#
+#         for layer_idx, layer in enumerate(regu_layers):
+#             z_aff = layer(activation)
+#             std = _row_noise_std(layer, sigma[layer_idx]).clamp_min(eps)
+#             delta_l = z_aff.pow(2) / (2 * math.sqrt(2 * math.pi) * std)
+#             delta_norm = _vector_norm(delta_l, p)
+#
+#             propagation = activation.new_tensor(1.0)
+#             for later_layer in regu_layers[layer_idx + 1:]:
+#                 propagation = propagation * _row_norm_factor(later_layer, p)
+#             propagation = propagation * _row_norm_factor(output, p)
+#
+#             total = total + propagation * delta_norm
+#             activation = 0.5 * z_aff + _row_noise_std(layer, sigma[layer_idx]) / math.sqrt(2 * math.pi)
+#
+#         batch_bounds.append(total)
+#
+#     return torch.stack(batch_bounds)
 
 
 def certify_affine(X, y, model, sigma, p=2):
@@ -296,31 +299,31 @@ def certify_affine(X, y, model, sigma, p=2):
     return label.item(), float(torch.stack(radii).min().clamp_min(0).item())
 
 
-def certify_affine_deviation(X, y, model, sigma, p=2):
-    """Deviation-corrected affine surrogate certificate from Proposition 11."""
-    p = _norm_ord(p)
-    q = _dual_norm_ord(p)
-
-    with _temporary_sigma(model, sigma):
-        scores_model = model(X)[0]
-
-    label = torch.argmax(scores_model)
-    if label != y.item():
-        return label.item(), 0.0
-
-    W_aff, b_aff = affine_surrogate_parameters(model, sigma)
-    scores_aff = (model.flatten(X) @ W_aff.T + b_aff)[0]
-    e_p = affine_deviation_bound(model, X, sigma, p=p)[0]
-
-    radii = []
-    for class_idx in range(scores_aff.numel()):
-        if class_idx == label.item():
-            continue
-        adjusted_margin = scores_aff[label] - scores_aff[class_idx] - 2 * e_p
-        denom = _vector_norm(W_aff[label] - W_aff[class_idx], q).clamp_min(1e-12)
-        radii.append(adjusted_margin / denom)
-
-    return label.item(), float(torch.stack(radii).min().clamp_min(0).item())
+# def certify_affine_deviation(X, y, model, sigma, p=2):
+#     """Deviation-corrected affine surrogate certificate from Proposition 11."""
+#     p = _norm_ord(p)
+#     q = _dual_norm_ord(p)
+#
+#     with _temporary_sigma(model, sigma):
+#         scores_model = model(X)[0]
+#
+#     label = torch.argmax(scores_model)
+#     if label != y.item():
+#         return label.item(), 0.0
+#
+#     W_aff, b_aff = affine_surrogate_parameters(model, sigma)
+#     scores_aff = (model.flatten(X) @ W_aff.T + b_aff)[0]
+#     e_p = affine_deviation_bound(model, X, sigma, p=p)[0]
+#
+#     radii = []
+#     for class_idx in range(scores_aff.numel()):
+#         if class_idx == label.item():
+#             continue
+#         adjusted_margin = scores_aff[label] - scores_aff[class_idx] - 2 * e_p
+#         denom = _vector_norm(W_aff[label] - W_aff[class_idx], q).clamp_min(1e-12)
+#         radii.append(adjusted_margin / denom)
+#
+#     return label.item(), float(torch.stack(radii).min().clamp_min(0).item())
 
 
 def _certify_lwa_lipschitz(X, y, model, sigma, p=2, bound_type="k_p", n_samples=None):
@@ -370,13 +373,14 @@ def certify_all_radius_results(X, y, model, sigma, norms=(1, 2, "inf"), n_sample
         label = _norm_label(p)
         _, lwa_k_p, kp_parts = certify_lwa_kp(X, y, model, sigma, p=p, n_samples=n_samples)
         _, lwa_k_abs, kabs_parts = certify_lwa_kabs(X, y, model, sigma, p=p, n_samples=n_samples)
-        _, aff_dev = certify_affine_deviation(X, y, model, sigma, p=p)
+        # Affine-deviation certification is disabled for now.
+        # _, aff_dev = certify_affine_deviation(X, y, model, sigma, p=p)
         _, aff = certify_affine(X, y, model, sigma, p=p)
 
         results[label] = {
             "lwa_k_p": lwa_k_p,
             "lwa_k_abs": lwa_k_abs,
-            "affine_deviation": aff_dev,
+            # "affine_deviation": aff_dev,
             "affine": aff,
             "parts": {
                 "k_p": kp_parts,

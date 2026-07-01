@@ -11,7 +11,7 @@ for path in (CURRENT_DIR, PROJECT_ROOT):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from LWA_certification import (  # noqa: E402
+from LWA_certification import ( 
     _as_sigma_list,
     _dual_norm_ord,
     _norm_label,
@@ -26,8 +26,8 @@ from LWA_certification import (  # noqa: E402
     affine_deviation_bound,
     affine_surrogate_parameters,
 )
-from LWA_model import LWRS  # noqa: E402
-from LWA_utils import DEFAULT_MODEL_PATH, get_device, get_mnist_loaders  # noqa: E402
+from LWA_model import LWRS
+from LWA_utils import DEFAULT_MODEL_PATH, get_device, get_mnist_loaders
 
 
 def _normal_cdf(x):
@@ -205,8 +205,6 @@ def print_summary(rows, slope_rows):
     for layer_idx in range(3):
         values = []
         for sample_stats in slope_rows:
-            # Expand approximately by using summary means across batches. This is enough
-            # to reveal whether slopes are near the high-sigma 1/2 tangent.
             if sample_stats[layer_idx].get("n", 0):
                 values.append(sample_stats[layer_idx]["mean"])
         print(f"Layer {layer_idx} mean-slope across batches: {_fmt_stats(_stats(values))}")

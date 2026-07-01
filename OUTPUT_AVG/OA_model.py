@@ -16,7 +16,7 @@ def _input_sigma(sigma):
 class OutputAveragingRS(nn.Module):
     """Standard input randomized smoothing with one ReLU hidden layer."""
 
-    def __init__(self, sigma=5.0, n_samples=1000, average="logits", hidden_dim=784):
+    def __init__(self, sigma=2.0, n_samples=1000, average="logits", hidden_dim=784):
         super().__init__()
         self.n_samples = int(n_samples)
         self.average = average
@@ -67,6 +67,4 @@ class OutputAveragingRS(nn.Module):
             return sample_logits.mean(dim=1)
         return torch.softmax(sample_logits, dim=-1).mean(dim=1)
 
-
-# Backward-compatible name used by older OUTPUT_AVG scripts.
 LWRS = OutputAveragingRS

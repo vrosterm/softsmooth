@@ -21,7 +21,7 @@ def _as_sigma_list(sigma, n_layers=2):
 class LWRS(nn.Module):
     """LWA model using two analytic ReGU hidden activations."""
 
-    def __init__(self, sigma=(5.0, 5.0), n_samples=1000, hidden_dim=256):
+    def __init__(self, sigma=(2.0, 2.0), n_samples=1000, hidden_dim=784):
         super().__init__()
         self.n_samples = n_samples
         self.hidden_dim = int(hidden_dim)

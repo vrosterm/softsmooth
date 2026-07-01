@@ -10,13 +10,13 @@ from tqdm import tqdm
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 LAYERWISE_AVG_DIR = Path(__file__).resolve().parent
 MODEL_DIR = LAYERWISE_AVG_DIR / "models"
-DEFAULT_MODEL_PATH = MODEL_DIR / "LWA_2regu_width256_model.pt"
+DEFAULT_MODEL_PATH = MODEL_DIR / "LWA_2regu_width784_model.pt"
 DEFAULT_MC_MODEL_PATH = MODEL_DIR / "LWA_MC_layerwise_model.pt"
-DEFAULT_SV_PATH = MODEL_DIR / "sv_min_2regu_width256.pt"
+DEFAULT_SV_PATH = MODEL_DIR / "sv_min_2regu_width784.pt"
 DEFAULT_MC_SV_PATH = MODEL_DIR / "mc_sv_min.pt"
-DEFAULT_CERTIFICATE_PATH = MODEL_DIR / "lwa_2regu_width256_certificate_results.pt"
+DEFAULT_CERTIFICATE_PATH = MODEL_DIR / "lwa_2regu_width784_certificate_results.pt"
 DEFAULT_MC_CERTIFICATE_PATH = MODEL_DIR / "lwa_mc_certificate_results.pt"
-DEFAULT_PLOT_PATH = MODEL_DIR / "lwa_2regu_width256_certificate_waterfall.png"
+DEFAULT_PLOT_PATH = MODEL_DIR / "lwa_2regu_width784_certificate_waterfall.png"
 LEGACY_MODEL_PATH = None
 
 
@@ -78,7 +78,18 @@ def _sv_penalty(sv, device):
     return sum(float(value.detach().to(device).item()) for value in sv)
 
 
-def epoch(loader, model, opt=None, sv=None, device=None):
+def clip_linear_weights(model, max_norm=None):
+    if max_norm is None or max_norm <= 0:
+        return
+    with torch.no_grad():
+        for layer in model.modules():
+            if isinstance(layer, nn.Linear):
+                weight_norm = torch.linalg.matrix_norm(layer.weight.data, ord=2).clamp_min(1e-12)
+                if weight_norm > max_norm:
+                    layer.weight.data.mul_(float(max_norm) / weight_norm)
+
+
+def epoch(loader, model, opt=None, sv=None, device=None, weight_clip_alpha=None):
     if device is None:
         device = get_device()
     total_loss, total_err = 0.0, 0.0
@@ -93,6 +104,7 @@ def epoch(loader, model, opt=None, sv=None, device=None):
             opt.zero_grad()
             loss.backward()
             opt.step()
+            clip_linear_weights(model, weight_clip_alpha)
 
         total_err += (yp.max(dim=1)[1] != y).sum().item()
         total_loss += loss.item() * X.shape[0]
@@ -100,7 +112,7 @@ def epoch(loader, model, opt=None, sv=None, device=None):
     return total_err / len(loader.dataset), total_loss / len(loader.dataset)
 
 
-def epoch_adversarial(loader, model, attack, opt=None, sv=None, *attack_args, device=None):
+def epoch_adversarial(loader, model, attack, opt=None, sv=None, *attack_args, device=None, weight_clip_alpha=None):
     if device is None:
         device = get_device()
     total_loss, total_err = 0.0, 0.0
@@ -116,6 +128,7 @@ def epoch_adversarial(loader, model, attack, opt=None, sv=None, *attack_args, de
             opt.zero_grad()
             loss.backward()
             opt.step()
+            clip_linear_weights(model, weight_clip_alpha)
 
         total_err += (yp.max(dim=1)[1] != y).sum().item()
         total_loss += loss.item() * X.shape[0]
